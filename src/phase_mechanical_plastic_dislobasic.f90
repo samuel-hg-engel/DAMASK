@@ -21,8 +21,7 @@ submodule(phase:plastic) dislobasic
       delta_V, &                                                                                    !< Dislocation activation volume
       rho_mob_0                                                                                     !< Mobile Dislocation Density
     real(pREAL),               allocatable, dimension(:,:) :: &
-      forestProjection, &
-      h_sl_sl                                                                                       !< components of slip-slip interaction matrix
+      forestProjection
     real(pREAL),               allocatable, dimension(:,:,:) :: &
       P_sl
     integer :: &
@@ -160,8 +159,6 @@ module function plastic_dislobasic_init() result(myPlasticity)
       prm%delta_V   = math_expand(pl%get_as1dReal('delta_V',   requiredSize=size(N_sl)),N_sl)
       prm%rho_mob_0 = math_expand(pl%get_as1dReal('rho_mob_0', requiredSize=size(N_sl)),N_sl)
 
-      prm%h_sl_sl = crystal_interaction_SlipBySlip(N_sl,pl%get_as1dReal('h_sl-sl'),phase_lattice(ph))
-
       prm%forestProjection = spread(          f_edge,1,prm%sum_N_sl) &
                            * crystal_forestProjection_edge (N_sl,phase_lattice(ph),phase_cOverA(ph)) &
                            + spread(1.0_pREAL-f_edge,1,prm%sum_N_sl) &
@@ -190,8 +187,7 @@ module function plastic_dislobasic_init() result(myPlasticity)
                prm%nu_g, &
                prm%rho_mob_0, &
                source=emptyRealArray)
-      allocate(prm%forestProjection(0,0), &
-               prm%h_sl_sl(0,0))
+      allocate(prm%forestProjection(0,0))
 
     end if slipActive
 
@@ -298,10 +294,7 @@ module function dislobasic_dotState(Mp,ph,en) result(dotState)
     call kinetics_sl(Mp,T,ph,en,dot_gamma_sl)
     abs_dot_gamma_sl = abs(dot_gamma_sl)
 
-    !dot_rho_ssd = abs_dot_gamma_sl * (prm%k_1 / prm%b_sl * prm%alpha_n * sqrt(matmul(prm%forestProjection,stt%rho_ssd(:,en)))) &
-    !            - abs_dot_gamma_sl * (prm%k_2 * stt%rho_ssd(:,en))
-
-    dot_rho_ssd = abs_dot_gamma_sl * (prm%k_1 / prm%b_sl * sqrt(matmul(prm%forestProjection,stt%rho_ssd(:,en)))) &
+    dot_rho_ssd = abs_dot_gamma_sl * (prm%k_1 / prm%b_sl * prm%alpha_n * sqrt(matmul(prm%forestProjection,stt%rho_ssd(:,en)))) &
                 - abs_dot_gamma_sl * (prm%k_2 * stt%rho_ssd(:,en))
 
   end associate
@@ -327,8 +320,6 @@ module subroutine dislobasic_dependentState(ph,en)
 
     !* threshold stress for dislocation motion
     dst%tau_pass(:,en) = prm%tau_0 + mu * prm%b_sl * prm%alpha_n * sqrt(matmul(prm%forestProjection,stt%rho_ssd(:,en)))
-    !dst%tau_pass(:,en) = prm%tau_0 + mu * prm%b_sl * prm%alpha_n * sqrt(matmul(prm%h_sl_sl,stt%rho_ssd(:,en)))
-    !dst%tau_pass(:,en) = prm%tau_0 + mu * prm%b_sl * prm%alpha_n * sqrt(stt%rho_ssd(:,en))
 
   end associate
 
