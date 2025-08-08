@@ -12,7 +12,7 @@ submodule(phase:plastic) dislobasic
   type :: tParameters
     real(pREAL),               allocatable, dimension(:) :: &
       b_sl, &                                                                                       !< magnitude of Burgers vector (m)
-      delta_F, &                                                                                     !< activation energy for glide (J)
+      delta_F, &                                                                                    !< activation energy for glide (J)
       k_1, &                                                                                        !< Dislocation multiplication
       alpha_n, &                                                                                    !< Slip-system interaction strength
       tau_0, &                                                                                      !< Intrinsic strength
@@ -294,7 +294,7 @@ module function dislobasic_dotState(Mp,ph,en) result(dotState)
     call kinetics_sl(Mp,T,ph,en,dot_gamma_sl)
     abs_dot_gamma_sl = abs(dot_gamma_sl)
 
-    dot_rho_ssd = abs_dot_gamma_sl * (prm%k_1 / prm%b_sl * prm%alpha_n * sqrt(matmul(prm%forestProjection,stt%rho_ssd(:,en)))) &
+    dot_rho_ssd = abs_dot_gamma_sl * (prm%k_1 / prm%b_sl * sqrt(matmul(prm%forestProjection,stt%rho_ssd(:,en)))) &
                 - abs_dot_gamma_sl * (prm%k_2 * stt%rho_ssd(:,en))
 
   end associate
