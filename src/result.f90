@@ -1,9 +1,13 @@
+! SPDX-License-Identifier: AGPL-3.0-or-later
 !--------------------------------------------------------------------------------------------------
 !> @author Vitesh Shah, Max-Planck-Institut für Eisenforschung GmbH
 !> @author Yi-Chin Yang, Max-Planck-Institut für Eisenforschung GmbH
 !> @author Jennifer Nastola, Max-Planck-Institut für Eisenforschung GmbH
 !> @author Martin Diehl, Max-Planck-Institut für Eisenforschung GmbH
 !--------------------------------------------------------------------------------------------------
+#ifdef PETSC
+#include <petsc/finclude/petscsys.h>
+#endif
 module result
   use, intrinsic :: ISO_fortran_env
 
@@ -15,8 +19,7 @@ module result
   use HDF5
 #ifdef PETSC
   use CLI
-  use system_routines
-#include <petsc/finclude/petscsys.h>
+  use OS
   use PETScSys
 #ifndef PETSC_HAVE_MPI_F90MODULE_VISIBILITY
   use MPI_f08
@@ -39,11 +42,10 @@ module result
   end interface result_closeGroup
 
   interface result_writeDataset
-    module procedure result_writeTensorDataset_real
-    module procedure result_writeVectorDataset_real
     module procedure result_writeScalarDataset_real
+    module procedure result_writeVectorDataset_real
+    module procedure result_writeTensorDataset_real
 
-    module procedure result_writeTensorDataset_int
     module procedure result_writeVectorDataset_int
   end interface result_writeDataset
 
@@ -63,9 +65,10 @@ module result
     result_closeJobFile, &
     result_addIncrement, &
     result_finalizeIncrement, &
-    result_addGroup, &
     result_openGroup, &
+    result_addGroup, &
     result_closeGroup, &
+    result_objectExists, &
     result_writeDataset, &
     result_writeDataset_str, &
     result_setLink, &
@@ -80,8 +83,9 @@ subroutine result_init(restart)
 
   logical, intent(in) :: restart
 
-  character(len=pPathLen) :: commandLine
+  character(len=pPATHLEN) :: commandLine
   integer :: hdferr
+  logical :: file_exists
   character(len=:), allocatable :: date
 
 
@@ -90,10 +94,13 @@ subroutine result_init(restart)
   print'(/,1x,a)', 'M. Diehl et al., Integrating Materials and Manufacturing Innovation 6(1):83–91, 2017'
   print'(  1x,a)', 'https://doi.org/10.1007/s40192-017-0084-5'
 
-  if (.not. restart) then
-    resultFile = HDF5_openFile(getSolverJobName()//'.hdf5','w')
+
+  inquire(file=CLI_jobName//'.hdf5',exist=file_exists)
+
+  if (.not. file_exists .or. .not. restart) then
+    call result_createJobFile()
     call result_addAttribute('DADF5_version_major',1)
-    call result_addAttribute('DADF5_version_minor',2)
+    call result_addAttribute('DADF5_version_minor',3)
     call get_command_argument(0,commandLine)
     call result_addAttribute('creator',trim(commandLine)//' '//DAMASK_VERSION)
     call result_addAttribute('created',now())
@@ -111,9 +118,9 @@ subroutine result_init(restart)
     call result_addAttribute('compiler',compiler_version())
     call result_addAttribute('compiler_options',compiler_options())
 
-    call result_addAttribute('DAMASK_version_major',DAMASK_VERSION_MAJOR)
-    call result_addAttribute('DAMASK_version_minor',DAMASK_VERSION_MINOR)
-    call result_addAttribute('DAMASK_version_patch',DAMASK_VERSION_PATCH)
+    call result_addAttribute('DAMASK_version_major',IO_strAsInt(DAMASK_VERSION_MAJOR))
+    call result_addAttribute('DAMASK_version_minor',IO_strAsInt(DAMASK_VERSION_MINOR))
+    call result_addAttribute('DAMASK_version_patch',IO_strAsInt(DAMASK_VERSION_PATCH))
 #ifdef DAMASK_VERSION_HASH
     call result_addAttribute('DAMASK_version_hash',DAMASK_VERSION_HASH)
 #endif
@@ -122,10 +129,13 @@ subroutine result_init(restart)
     call result_addAttribute('PETSc_version_major',PETSC_VERSION_MAJOR)
     call result_addAttribute('PETSc_version_minor',PETSC_VERSION_MINOR)
     call result_addAttribute('PETSc_version_subminor',PETSC_VERSION_SUBMINOR)
-    call result_addAttribute('user',getUserName())
-    call result_addAttribute('host',getHostName())
+    call result_addAttribute('user',OS_getUserName())
+    call result_addAttribute('host',OS_getHostName())
 #endif
-
+#ifdef BOOST
+    call result_addAttribute('job_id',CLI_jobID)
+#endif
+    call result_addAttribute('job_name',CLI_jobName)
     call result_closeGroup(result_addGroup('cell_to'))
     call result_addAttribute('description','mappings to place data in space','cell_to')
     call result_closeGroup(result_addGroup('setup'))
@@ -150,12 +160,25 @@ end subroutine result_init
 !--------------------------------------------------------------------------------------------------
 !> @brief Open the result file to append data.
 !--------------------------------------------------------------------------------------------------
+subroutine result_createJobFile(parallel)
+
+  logical, intent(in), optional :: parallel
+
+
+  resultFile = HDF5_openFile(CLI_jobName//'.hdf5','w',parallel)
+
+end subroutine result_createJobFile
+
+
+!--------------------------------------------------------------------------------------------------
+!> @brief Open the result file to append data.
+!--------------------------------------------------------------------------------------------------
 subroutine result_openJobFile(parallel)
 
   logical, intent(in), optional :: parallel
 
 
-  resultFile = HDF5_openFile(getSolverJobName()//'.hdf5','a',parallel)
+  resultFile = HDF5_openFile(CLI_jobName//'.hdf5','a',parallel)
 
 end subroutine result_openJobFile
 
@@ -227,6 +250,19 @@ end function result_addGroup
 
 
 !--------------------------------------------------------------------------------------------------
+!> @brief Check whether a group or a dataset exists in the result file.
+!--------------------------------------------------------------------------------------------------
+logical function result_objectExists(path)
+
+  character(len=*), intent(in) :: path
+
+
+  result_objectExists = HDF5_objectExists(resultFile,path)
+
+end function result_objectExists
+
+
+!--------------------------------------------------------------------------------------------------
 !> @brief Set link to object in result file.
 !--------------------------------------------------------------------------------------------------
 subroutine result_setLink(path,link)
@@ -256,8 +292,8 @@ subroutine result_addSetupFile(content,fname,description)
   i = 0
 
   do while (HDF5_objectExists(groupHandle,name//suffix))
-      i = i+1
-      suffix = '.'//IO_intAsStr(i)
+    i = i+1
+    suffix = '.'//IO_intAsStr(i)
   end do
   call result_writeDataset_str(content,'setup',name//suffix,description)
   call result_closeGroup(groupHandle)
@@ -484,27 +520,6 @@ subroutine result_writeVectorDataset_int(dataset,group,label,description,SIunit,
   call HDF5_closeGroup(groupHandle)
 
 end subroutine result_writeVectorDataset_int
-
-
-!--------------------------------------------------------------------------------------------------
-!> @brief Store integer tensor dataset with associated metadata.
-!--------------------------------------------------------------------------------------------------
-subroutine result_writeTensorDataset_int(dataset,group,label,description,SIunit)
-
-  character(len=*), intent(in)                   :: label,group,description
-  character(len=*), intent(in), optional         :: SIunit
-  integer,          intent(in), dimension(:,:,:) :: dataset
-
-  integer(HID_T) :: groupHandle
-
-
-  groupHandle = result_openGroup(group)
-  call HDF5_write(dataset,groupHandle,label)
-  call executionStamp(group//'/'//label,description,SIunit)
-  call HDF5_closeGroup(groupHandle)
-
-
-end subroutine result_writeTensorDataset_int
 
 
 !--------------------------------------------------------------------------------------------------

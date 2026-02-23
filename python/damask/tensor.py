@@ -1,15 +1,25 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
 """
 Tensor mathematics.
 
 All routines operate on numpy.ndarrays of shape (...,3,3).
 """
 
+from warnings import warn as _warn
+
 import numpy as _np
+from numpy import typing as _npt
 
 
-def deviatoric(T: _np.ndarray) -> _np.ndarray:
+def deviatoric(T: _npt.NDArray[_np.floating]) -> _npt.NDArray[_np.floating]:
     r"""
     Calculate deviatoric part of a tensor.
+
+    Deprecation warning
+    -------------------
+    .. deprecated:: 3.1.0
+        `deviatoric` will be removed in DAMASK 4.0 and replaced by
+        `traceless`, `mechanics.deviatoric`, and `mechanics.isochoric`.
 
     Parameters
     ----------
@@ -36,10 +46,12 @@ def deviatoric(T: _np.ndarray) -> _np.ndarray:
     where :math:`\vb{I}_\text{p}` is the spherical
     part of the tensor mapped onto identity.
     """
-    return T - spherical(T,tensor=True)
+    _warn('tensor.deviatoric will be removed in DAMASK 4.0',
+          DeprecationWarning, stacklevel=2)
+    return traceless(T)
 
 
-def eigenvalues(T_sym: _np.ndarray) -> _np.ndarray:
+def eigenvalues(T_sym: _npt.NDArray[_np.floating]) -> _npt.NDArray[_np.floating]:
     r"""
     Calculate eigenvalues of a symmetric tensor.
 
@@ -71,8 +83,8 @@ def eigenvalues(T_sym: _np.ndarray) -> _np.ndarray:
     return _np.linalg.eigvalsh(symmetric(T_sym))
 
 
-def eigenvectors(T_sym: _np.ndarray,
-                 RHS: bool = False) -> _np.ndarray:
+def eigenvectors(T_sym: _npt.NDArray[_np.floating],
+                 RHS: bool = False) -> _npt.NDArray[_np.floating]:
     r"""
     Calculate eigenvectors of a symmetric tensor.
 
@@ -109,8 +121,8 @@ def eigenvectors(T_sym: _np.ndarray,
     return v
 
 
-def spherical(T: _np.ndarray,
-              tensor: bool = True) -> _np.ndarray:
+def spherical(T: _npt.NDArray[_np.floating],
+              tensor: bool = True) -> _npt.NDArray[_np.floating]:
     r"""
     Calculate spherical part of a tensor.
 
@@ -143,7 +155,7 @@ def spherical(T: _np.ndarray,
     return _np.einsum('...jk,...',_np.eye(3),sph) if tensor else sph
 
 
-def symmetric(T: _np.ndarray) -> _np.ndarray:
+def symmetric(T: _npt.NDArray[_np.floating]) -> _npt.NDArray[_np.floating]:
     r"""
     Symmetrize tensor.
 
@@ -168,7 +180,37 @@ def symmetric(T: _np.ndarray) -> _np.ndarray:
     return (T+transpose(T))*0.5
 
 
-def transpose(T: _np.ndarray) -> _np.ndarray:
+def traceless(T: _npt.NDArray[_np.floating]) -> _npt.NDArray[_np.floating]:
+    r"""
+    Remove the trace from a tensor.
+
+    Parameters
+    ----------
+    T : numpy.ndarray, shape (...,3,3)
+        Tensor of which the trace is removed.
+
+    Returns
+    -------
+    T' : numpy.ndarray, shape (...,3,3)
+        Tensor T without its trace.
+
+    See Also
+    --------
+    spherical : Calculate spherical part of a tensor.
+    mechanics.deviatoric : Calculate deviatoric part of a
+        stress tensor.
+    mechanics.isochoric : Calculate isochoric part of a
+        strain tensor.
+
+    Notes
+    -----
+    A stress tensor without trace is called deviatoric;
+    a strain tensor without trace is called isochoric.
+    """
+    return T - spherical(T,tensor=True)
+
+
+def transpose(T: _npt.NDArray[_np.floating]) -> _npt.NDArray[_np.floating]:
     r"""
     Transpose tensor.
 

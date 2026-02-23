@@ -1,3 +1,4 @@
+! SPDX-License-Identifier: AGPL-3.0-or-later
 !--------------------------------------------------------------------------------------------------
 !> @author Luv Sharma, Max-Planck-Institut für Eisenforschung GmbH
 !> @author Pratheek Shanthraj, Max-Planck-Institut für Eisenforschung GmbH
@@ -54,10 +55,10 @@ module function anisobrittle_init() result(mySources)
 
 
   phases => config_material%get_dict('phase')
-  allocate(param(phases%length))
+  allocate(param(size(phases)))
   extmsg = ''
 
-  do ph = 1, phases%length
+  do ph = 1, size(phases)
     if (mySources(ph)) then
       phase => phases%get_dict(ph)
       src => phase%get_dict('damage')

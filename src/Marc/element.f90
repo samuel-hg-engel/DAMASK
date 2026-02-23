@@ -1,3 +1,4 @@
+! SPDX-License-Identifier: AGPL-3.0-or-later
 !--------------------------------------------------------------------------------------------------
 !> @author Martin Diehl, Max-Planck-Institut für Eisenforschung GmbH
 !> @author Christoph Koords, Max-Planck-Institut für Eisenforschung GmbH
@@ -151,7 +152,6 @@ module element
   integer, dimension(NIPNEIGHBOR(CELLTYPE(1)),NIP(1)),   parameter :: IPNEIGHBOR1 = &
     reshape([&
       -2,-3,-1  &
-! Note: This fix is for gfortran 9 only. gfortran 8 supports neither, gfortran > 9 both variants
     ],[NIPNEIGHBOR(CELLTYPE(1)),NIP(1)])
 
   integer, dimension(NIPNEIGHBOR(CELLTYPE(2)),NIP(2)),   parameter :: IPNEIGHBOR2 = &
@@ -763,10 +763,10 @@ subroutine tElement_init(self,elemType)
       self%vtkType  = 'TRIANGLE'
     case(2)
       self%cellFace = CELLFACE2
-      self%vtkType  = 'QUAD'
+      self%vtkType  = 'QUADRILATERAL'
     case(3)
       self%cellFace = CELLFACE3
-      self%vtkType  = 'TETRA'
+      self%vtkType  = 'TETRAHEDRON'
     case(4)
       self%cellFace = CELLFACE4
       self%vtkType  = 'HEXAHEDRON'

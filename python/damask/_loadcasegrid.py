@@ -1,19 +1,9 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
 from typing import Optional, Union, Any
 
-from numpy import ma
-
 from ._typehints import FileHandle
-from ._yaml import NiceDumper
+from ._yaml import MaskedMatrixDumper
 from . import YAML
-
-
-class MaskedMatrixDumper(NiceDumper):
-    """Format masked matrices."""
-
-    def represent_data(self, data: Any):
-        return super().represent_data(data.astype(object).filled('x')                               # type: ignore[attr-defined]
-                                      if isinstance(data, ma.core.MaskedArray) else
-                                      data)
 
 
 class LoadcaseGrid(YAML):

@@ -1,3 +1,4 @@
+! SPDX-License-Identifier: AGPL-3.0-or-later
 !--------------------------------------------------------------------------------------------------
 !> @author Martin Diehl, KU Leuven
 !> @author Philip Eisenlohr, Michigan State University
@@ -247,8 +248,10 @@ subroutine misc_selfTest()
 
 contains
 
-  function test_str(str_in) result(str_out)
-
+  pure function test_str(str_in) result(str_out)
+#ifndef __GFORTRAN__
+    import, only: misc_optional_str
+#endif
     character(len=:), allocatable          :: str_out
     character(len=*), intent(in), optional :: str_in
 
@@ -258,8 +261,10 @@ contains
   end function test_str
 
 
-  function test_pI32(int_in) result(int_out)
-
+  pure function test_pI32(int_in) result(int_out)
+#ifndef __GFORTRAN__
+    import, only: pI32, misc_optional_pI32
+#endif
     integer(pI32)                       :: int_out
     integer(pI32), intent(in), optional :: int_in
 
@@ -269,8 +274,10 @@ contains
   end function test_pI32
 
 
-  function test_real(real_in) result(real_out)
-
+  pure function test_real(real_in) result(real_out)
+#ifndef __GFORTRAN__
+    import, only: pREAL, misc_optional_real
+#endif
     real(pREAL)                       :: real_out
     real(pREAL), intent(in), optional :: real_in
 
@@ -280,8 +287,10 @@ contains
   end function test_real
 
 
-  function test_bool(bool_in) result(bool_out)
-
+  pure function test_bool(bool_in) result(bool_out)
+#ifndef __GFORTRAN__
+    import, only: misc_optional_bool
+#endif
     logical                       :: bool_out
     logical, intent(in), optional :: bool_in
 

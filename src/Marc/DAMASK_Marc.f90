@@ -1,3 +1,4 @@
+! SPDX-License-Identifier: AGPL-3.0-or-later
 !--------------------------------------------------------------------------------------------------
 !> @author Philip Eisenlohr, Max-Planck-Institut für Eisenforschung GmbH
 !> @author Franz Roters, Max-Planck-Institut für Eisenforschung GmbH
@@ -16,9 +17,6 @@
 #undef unix
 #endif
 
-#define QUOTE(x) #x
-#define PASTE(x,y) x ## y
-
 #ifdef DAMASKVERSION
 #define DAMASK_VERSION DAMASKVERSION
 #endif
@@ -28,6 +26,9 @@
 #include "../parallelization.f90"
 #include "../misc.f90"
 #include "../IO.f90"
+#ifdef FYAML
+#include "../OS.f90"
+#endif
 #include "../types.f90"
 #include "../YAML.f90"
 #include "../HDF5_utilities.f90"
@@ -55,12 +56,12 @@ module DAMASK_interface
   type(tLoadcase), allocatable, protected, public :: loadcase(:)
   logical,          protected, public             :: symmetricSolver
   character(len=*), parameter, public             :: INPUTFILEEXTENSION = '.dat'
+  character(len=:), allocatable, public           :: CLI_jobName
   integer, save, public                           :: inc_written
 
 
   public :: &
     DAMASK_interface_init, &
-    getSolverJobName, &
     getOutputFrequency
 
 contains
@@ -68,13 +69,12 @@ contains
 !--------------------------------------------------------------------------------------------------
 !> @brief Report and set working directory.
 !--------------------------------------------------------------------------------------------------
-subroutine DAMASK_interface_init
+subroutine DAMASK_interface_init()
 
   integer, dimension(8)   :: dateAndTime
   integer                 :: ierr
-  character(len=pPathLen) :: wd
+  character(len=pPATHLEN) :: wd
 
-  external                :: quit
 
   print'(/,1x,a)', '<<<+-  DAMASK_Marc init -+>>>'
 
@@ -99,6 +99,8 @@ subroutine DAMASK_interface_init
     print*, 'working directory "'//trim(wd)//'" does not exist'
     call quit(1)
   end if
+  CLI_jobName = getSolverJobName()
+
   symmetricSolver = solverIsSymmetric()
   call getOutputFrequency
 
@@ -130,7 +132,7 @@ logical function solverIsSymmetric()
   character(len=pSTRLEN) :: line
   integer :: myStat,fileUnit,s,e
 
-  open(newunit=fileUnit, file=getSolverJobName()//INPUTFILEEXTENSION, &
+  open(newunit=fileUnit, file=CLI_jobName//INPUTFILEEXTENSION, &
        status='old', position='rewind', action='read',iostat=myStat)
   do
     read (fileUnit,'(A)',END=100) line
@@ -155,7 +157,7 @@ subroutine getOutputFrequency
   character(len=pSTRLEN) :: line
   integer, allocatable, dimension(:) :: chunkPos
 
-  open(newunit=fileUnit, file=getSolverJobName()//INPUTFILEEXTENSION, &
+  open(newunit=fileUnit, file=CLI_jobName//INPUTFILEEXTENSION, &
        status='old', position='rewind', action='read',iostat=myStat)
   number_loadcases = 0
   do
@@ -185,7 +187,7 @@ subroutine getOutputFrequency
       elseif (IO_lc(strValue(line,chunkPos,2)) == 'increment') then
         read (fileUnit,'(A)',END=200) line
         chunkPos = strPos(line)
-        if (IO_strAsInt(strValue(line,chunkPos,1)) /= 0) then              ! change output frequency only if specified by number of incs
+        if (IO_strAsInt(strValue(line,chunkPos,1)) /= 0) then                                       ! change output frequency only if specified by number of incs
           loadcase(i)%frequency = IO_strAsInt(strValue(line,chunkPos,1))
         end if
       end if
@@ -246,6 +248,8 @@ end module DAMASK_interface
 #include "../phase_damage.f90"
 #include "../phase_damage_isobrittle.f90"
 #include "../phase_damage_anisobrittle.f90"
+#include "../phase_chemical.f90"
+#include "../phase_chemical_quadEnergy.f90"
 #include "../homogenization.f90"
 #include "../homogenization_mechanical.f90"
 #include "../homogenization_mechanical_pass.f90"
@@ -256,6 +260,8 @@ end module DAMASK_interface
 #include "../homogenization_thermal_isotemperature.f90"
 #include "../homogenization_damage.f90"
 #include "../homogenization_damage_pass.f90"
+#include "../homogenization_chemical.f90"
+#include "../homogenization_chemical_pass.f90"
 #include "materialpoint_Marc.f90"
 
 !--------------------------------------------------------------------------------------------------
@@ -330,8 +336,8 @@ subroutine hypela2(d,g,e,de,s,t,dt,ngens,m,nn,kcus,matus,ndi,nshear,disp, &
 ! Marc common blocks are in fixed format so they have to be interpreted accordingly
 
 !DIR$ NOFREEFORM
-#include QUOTE(PASTE(MARC_SOURCE,/common/concom))                                                   ! concom is needed for inc, lovl
-#include QUOTE(PASTE(MARC_SOURCE,/common/creeps))                                                   ! creeps is needed for timinc (time increment)
+#include "concom"                                                                                   ! concom is needed for inc, lovl
+#include "creeps"                                                                                   ! creeps is needed for timinc (time increment)
 !DIR$ FREEFORM
 
   logical :: cutBack
@@ -471,9 +477,10 @@ subroutine uedinc(inc,incsub)
   real(pREAL), allocatable, dimension(:,:) :: d_n
   character(len=32), save :: old_loadcase
 
+! Marc common blocks are in fixed format so they have to be interpreted accordingly
 !DIR$ NOFREEFORM
-#include QUOTE(PASTE(MARC_SOURCE,/common/bclabel))                                                  ! bclabel is needed for ldcasename (load case name)
-#include QUOTE(PASTE(MARC_SOURCE,/common/creeps))                                                   ! creeps is needed for cptim (time at beginning of increment)
+#include "bclabel"                                                                                  ! bclabel is needed for ldcasename (load case name)
+#include "creeps"                                                                                   ! creeps is needed for cptim (time at beginning of increment)
 !DIR$ FREEFORM
 
 
@@ -524,9 +531,10 @@ subroutine uedjob(icall,iexit)
   integer :: n, nqncomp, nqdatatype
   real(pREAL), allocatable, dimension(:,:) :: d_n
 
+! Marc common blocks are in fixed format so they have to be interpreted accordingly
 !DIR$ NOFREEFORM
-#include QUOTE(PASTE(MARC_SOURCE,/common/concom))                                                   ! concom is needed for inc
-#include QUOTE(PASTE(MARC_SOURCE,/common/creeps))                                                   ! creeps is needed for cptim (time at beginning of increment)
+#include "concom"                                                                                   ! concom is needed for inc
+#include "creeps"                                                                                   ! creeps is needed for cptim (time at beginning of increment)
 !DIR$ FREEFORM
 
   if (icall == 0 .and. inc - 1 > inc_written) then                                                  ! write results for final inc unless already done

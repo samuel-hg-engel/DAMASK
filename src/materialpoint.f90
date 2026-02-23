@@ -1,3 +1,4 @@
+! SPDX-License-Identifier: AGPL-3.0-or-later
 !--------------------------------------------------------------------------------------------------
 !> @author Franz Roters, Max-Planck-Institut für Eisenforschung GmbH
 !> @author Philip Eisenlohr, Max-Planck-Institut für Eisenforschung GmbH
@@ -6,7 +7,7 @@
 module materialpoint
   use parallelization
   use CLI
-  use system_routines
+  use OS
   use signal
   use prec
   use misc
@@ -27,13 +28,10 @@ module materialpoint
   use homogenization
   use discretization
 #if   defined(MESH)
-#include "petscversion.h"
-#if  (PETSC_VERSION_MAJOR==3 && PETSC_VERSION_MINOR<18)
-  use FEM_quadrature
-#endif
   use discretization_mesh
 #elif defined(GRID)
   use base64
+  use zlib
   use discretization_grid
 #endif
 
@@ -49,15 +47,14 @@ contains
 subroutine materialpoint_initAll()
 
   call parallelization_init()
-  call CLI_init()                                                                                   ! grid and mesh commandline interface
-  call system_routines_init()
-  call signal_init()
   call prec_init()
+  call OS_init()
   call misc_init()
   call IO_init()
-#if   defined(MESH) && (PETSC_VERSION_MAJOR==3 && PETSC_VERSION_MINOR<18)
-  call FEM_quadrature_init()
-#elif defined(GRID)
+  call CLI_init()                                                                                   ! grid and mesh commandline interface
+  call signal_init()
+#if defined(GRID)
+   call zlib_init()
    call base64_init()
 #endif
   call types_init()
@@ -73,9 +70,9 @@ subroutine materialpoint_initAll()
 #if   defined(MESH)
   call discretization_mesh_init()
 #elif defined(GRID)
-  call discretization_grid_init(restart=CLI_restartInc>0)
+  call discretization_grid_init()
 #endif
-  call material_init(restart=CLI_restartInc>0)
+  call material_init()
   call phase_init()
   call homogenization_init()
   call materialpoint_init()
@@ -94,11 +91,10 @@ subroutine materialpoint_init()
 
   print'(/,1x,a)', '<<<+-  materialpoint init  -+>>>'; flush(IO_STDOUT)
 
-
   if (CLI_restartInc > 0) then
     print'(/,1x,a,1x,i0)', 'loading restart information of increment',CLI_restartInc; flush(IO_STDOUT)
 
-    fileHandle = HDF5_openFile(getSolverJobName()//'_restart.hdf5','r')
+    fileHandle = HDF5_openFile(CLI_jobName//'_restart.hdf5','r')
 
     call homogenization_restartRead(fileHandle)
     call phase_restartRead(fileHandle)
@@ -119,7 +115,7 @@ subroutine materialpoint_restartWrite()
 
   print'(1x,a)', 'saving field and constitutive data required for restart';flush(IO_STDOUT)
 
-  fileHandle = HDF5_openFile(getSolverJobName()//'_restart.hdf5','a')
+  fileHandle = HDF5_openFile(CLI_jobName//'_restart.hdf5','a')
 
   call homogenization_restartWrite(fileHandle)
   call phase_restartWrite(fileHandle)

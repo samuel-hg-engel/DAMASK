@@ -1,3 +1,4 @@
+! SPDX-License-Identifier: AGPL-3.0-or-later
 !--------------------------------------------------------------------------------------------------
 !> @author Martin Diehl, Max-Planck-Institut für Eisenforschung GmbH
 !> @brief Read in the material and numerics configuration from their respective file.
@@ -94,11 +95,11 @@ function config_listReferences(config,indent) result(references)
 
   filler = repeat(' ',misc_optional(indent,0))
   ref => config%get_list('references',emptyList)
-  if (ref%length == 0) then
+  if (size(ref) == 0) then
     references = ''
   else
     references = 'references:'
-    do r = 1, ref%length
+    do r = 1, size(ref)
       references = references//IO_EOL//filler//'- '//IO_wrapLines(ref%get_asStr(r),filler=filler//'  ')
     end do
   end if

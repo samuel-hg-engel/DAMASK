@@ -1,3 +1,4 @@
+! SPDX-License-Identifier: AGPL-3.0-or-later
 !--------------------------------------------------------------------------------------------------
 !> @author Franz Roters, Max-Planck-Institut für Eisenforschung GmbH
 !> @author Philip Eisenlohr, Max-Planck-Institut für Eisenforschung GmbH
@@ -6,27 +7,76 @@
 !> @brief  input/output functions
 !--------------------------------------------------------------------------------------------------
 module IO
+  use, intrinsic :: ISO_C_binding
   use, intrinsic :: ISO_fortran_env, only: &
     IO_STDOUT => OUTPUT_UNIT, &
-    IO_STDERR => ERROR_UNIT
+    IO_STDERR => ERROR_UNIT, &
+    IO_STDIN => INPUT_UNIT
 
   use prec
   use constants
   use misc
 #ifndef MARC_SOURCE
-  use system_routines
+  use OS
 #endif
-
 implicit none(type,external)
   private
 
-  character(len=*), parameter, public :: &
-    IO_WHITESPACE = achar(44)//achar(32)//achar(9)//achar(10)//achar(13), &                         !< whitespace characters
-    IO_QUOTES  = "'"//'"'
+
+  interface
+#ifndef MARC_SOURCE
+    function isatty_stdout_C() bind(C)
+      use, intrinsic :: ISO_C_binding, only: C_BOOL
+
+      implicit none(type,external)
+      logical(C_BOOL) :: isatty_stdout_C
+    end function isatty_stdout_C
+
+    function isatty_stderr_C() bind(C)
+      use, intrinsic :: ISO_C_binding, only: C_BOOL
+
+      implicit none(type,external)
+      logical(C_BOOL) :: isatty_stderr_C
+    end function isatty_stderr_C
+
+    function isatty_stdin_C() bind(C)
+      use, intrinsic :: ISO_C_binding, only: C_BOOL
+
+      implicit none(type,external)
+      logical(C_BOOL) :: isatty_stdin_C
+    end function isatty_stdin_C
+#else
+    subroutine quit(stop_id)
+
+      implicit none(type,external)
+      integer, intent(in) :: stop_id
+    end subroutine quit
+#endif
+  end interface
+
+  ! For transition period
+  interface IO_error
+    module procedure IO_error_new
+    module procedure IO_error_old
+  end interface IO_error
+
   character, parameter, public :: &
+    IO_ESC = achar(27), &                                                                           !< escape character
     IO_EOL = LF                                                                                     !< end of line character
+  character(len=*), parameter, public :: &
+    IO_FORMATRESET = IO_ESC//'[0m', &                                                               !< reset formatting
+    IO_EMPH = IO_ESC//'[3m', &                                                                      !< emphasize (italics)
+    IO_QUOTES  = "'"//'"' , &                                                                       !< quotes for strings
+    IO_WHITESPACE = achar(44)//achar(32)//achar(9)//achar(10)//achar(13)                            !< whitespace characters
+
+#ifndef MARC_SOURCE
+    logical(C_BOOL), bind(C, name='IO_redirectedSTDOUT') :: IO_redirectedSTDOUT = .false.           !< STDOUT writes to file 'out.X' where X is the world rank
+    logical(C_BOOL), bind(C, name='IO_redirectedSTDERR') :: IO_redirectedSTDERR = .false.           !< STDERR writes to file 'err.X' where X is the world rank
+#endif
+   logical :: IO_colored = .true.                                                                   !< status of colored output
 
   public :: &
+    quit, &
     IO_init, &
     IO_selfTest, &
     IO_read, &
@@ -34,6 +84,7 @@ implicit none(type,external)
     IO_lc, &
     IO_glueDiffering, &
     IO_intAsStr, &
+    IO_realAsStr, &
     IO_strAsInt, &
     IO_strAsReal, &
     IO_strAsBool, &
@@ -41,17 +92,32 @@ implicit none(type,external)
     IO_error, &
     IO_warning, &
     IO_STDOUT, &
+    IO_STDERR, &
     tokenize
 
 contains
 
 
 !--------------------------------------------------------------------------------------------------
-!> @brief Do self test.
+!> @brief Set options related to use of ANSI escape codes and do self test.
 !--------------------------------------------------------------------------------------------------
 subroutine IO_init()
 
+  character(len=pSTRLEN) :: fname
+  integer :: status
+
+
   print'(/,1x,a)', '<<<+-  IO init  -+>>>'; flush(IO_STDOUT)
+
+#ifndef MARC_SOURCE
+  ! redirection occurs in parallelization_init before any output is written
+  inquire(unit=IO_STDOUT,name=fname)
+  IO_redirectedSTDOUT = logical(fname(:4) == 'out.',C_BOOL)
+  inquire(unit=IO_STDERR,name=fname)
+  IO_redirectedSTDERR = logical(fname(:4) == 'err.',C_BOOL)
+#endif
+  call get_environment_variable('NO_COLOR',status=status)                                           !< https://no-color.org
+  IO_colored = 0 /= status
 
   call IO_selfTest()
 
@@ -77,7 +143,7 @@ function IO_read(fileName) result(fileContent)
   inquire(file = fileName, size=fileLength)
   open(newunit=fileUnit, file=fileName, access='stream',&
        status='old', position='rewind', action='read',iostat=myStat)
-  if (myStat /= 0) call IO_error(100,trim(fileName))
+  if (myStat /= 0) call IO_error(100_pI16,'cannot open file',fileName,emph=[2])
   allocate(character(len=fileLength)::fileContent)
   if (fileLength==0) then
     close(fileUnit)
@@ -85,7 +151,7 @@ function IO_read(fileName) result(fileContent)
   end if
 
   read(fileUnit,iostat=myStat) fileContent
-  if (myStat /= 0) call IO_error(102,trim(fileName))
+  if (myStat /= 0) call IO_error(100_pI16,'cannot read from file',fileName,emph=[2])
   close(fileUnit)
 
   if (index(fileContent,CR//LF,kind=pI64) /= 0)     fileContent = CRLF2LF(fileContent)
@@ -162,12 +228,10 @@ pure function IO_lc(str)
 end function IO_lc
 
 
-
-
 !--------------------------------------------------------------------------------------------------
 ! @brief Return first (with glued on second if they differ).
 !--------------------------------------------------------------------------------------------------
-function IO_glueDiffering(first,second,glue)
+pure function IO_glueDiffering(first,second,glue)
 
   character(len=*),           intent(in)  :: first
   character(len=*),           intent(in)  :: second
@@ -187,7 +251,7 @@ end function IO_glueDiffering
 !--------------------------------------------------------------------------------------------------
 !> @brief Return given int value as string.
 !--------------------------------------------------------------------------------------------------
-function IO_intAsStr(i)
+pure function IO_intAsStr(i)
 
   integer, intent(in)            :: i
   character(len=:), allocatable  :: IO_intAsStr
@@ -197,6 +261,23 @@ function IO_intAsStr(i)
   write(IO_intAsStr,'(i0)') i
 
 end function IO_intAsStr
+
+
+!--------------------------------------------------------------------------------------------------
+!> @brief Return given float value as string.
+!--------------------------------------------------------------------------------------------------
+pure function IO_realAsStr(f)
+
+  real(pREAL), intent(in)        :: f
+  character(len=:), allocatable  :: IO_realAsStr
+  character(len=15)              :: tmp
+
+
+  write(tmp,'(g15.7)') f
+  tmp = adjustl(tmp)
+  allocate(IO_realAsStr,source=tmp(:len_trim(tmp)))
+
+end function IO_realAsStr
 
 
 !--------------------------------------------------------------------------------------------------
@@ -210,7 +291,7 @@ integer function IO_strAsInt(str)
 
 
   read(str,*,iostat=readStatus) IO_strAsInt
-  if (readStatus /= 0) call IO_error(111,'cannot represent "'//str//'" as integer')
+  if (readStatus /= 0) call IO_error(111_pI16,'cannot represent',str,'as integer',emph=[2])
 
 end function IO_strAsInt
 
@@ -226,7 +307,7 @@ real(pREAL) function IO_strAsReal(str)
 
 
   read(str,*,iostat=readStatus) IO_strAsReal
-  if (readStatus /= 0) call IO_error(111,'cannot represent "'//str//'" as real')
+  if (readStatus /= 0) call IO_error(111_pI16,'cannot represent',str,'as real',emph=[2])
 
 end function IO_strAsReal
 
@@ -246,7 +327,7 @@ logical function IO_strAsBool(str)
   elseif (trim(adjustl(str)) == 'False' .or. trim(adjustl(str)) == 'false') then
     IO_strAsBool = .false.
   else
-    call IO_error(111,'cannot represent "'//str//'" as boolean')
+    call IO_error(111_pI16,'cannot represent',str,'as boolean',emph=[2])
   end if
 
 end function IO_strAsBool
@@ -268,34 +349,35 @@ function IO_color(fg,bg,unit)
 
   IO_color = ''
 
-#ifndef MARC_SOURCE
-  if (.not. isatty(misc_optional(unit,IO_STDOUT))) return
+  if (.not. IO_colored .or. .not. IO_isaTTY(misc_optional(unit,int(IO_STDOUT)))) return
 
   if (present(fg)) &
-    IO_color = IO_color//achar(27)//'[38;2;'//IO_intAsStr(fg(1))//';' &
-                                            //IO_intAsStr(fg(2))//';' &
-                                            //IO_intAsStr(fg(3))//'m'
+    IO_color = IO_color//IO_ESC//'[38;2;'//IO_intAsStr(fg(1))//';' &
+                                         //IO_intAsStr(fg(2))//';' &
+                                         //IO_intAsStr(fg(3))//'m'
   if (present(bg)) &
-    IO_color = IO_color//achar(27)//'[48;2;'//IO_intAsStr(bg(1))//';' &
-                                            //IO_intAsStr(bg(2))//';' &
-                                            //IO_intAsStr(bg(3))//'m'
+    IO_color = IO_color//IO_ESC//'[48;2;'//IO_intAsStr(bg(1))//';' &
+                                         //IO_intAsStr(bg(2))//';' &
+                                         //IO_intAsStr(bg(3))//'m'
 
-  if (.not. present(fg) .and. .not. present(bg)) IO_color = achar(27)//'[0m'
-#endif
+  if (.not. present(fg) .and. .not. present(bg)) IO_color = IO_FORMATRESET
 
 end function IO_color
 
 
 !--------------------------------------------------------------------------------------------------
 !> @brief Write error statements and terminate the run with exit #9xxx.
+!> @details Should become "IO_error" after completed migration.
 !--------------------------------------------------------------------------------------------------
-subroutine IO_error(error_ID,ext_msg,label1,ID1,label2,ID2)
+subroutine IO_error_new(error_ID, &
+                        info_1,info_2,info_3,info_4,info_5,info_6,info_7,info_8,info_9, &
+                        emph)
 
-  integer,                    intent(in) :: error_ID
-  character(len=*), optional, intent(in) :: ext_msg,label1,label2
-  integer,          optional, intent(in) :: ID1,ID2
 
-  external                      :: quit
+  integer(pI16),      intent(in) :: error_ID        ! should go back to default integer after completed migration.
+  class(*), optional, intent(in) :: info_1,info_2,info_3,info_4,info_5,info_6,info_7,info_8,info_9
+  integer, dimension(:), optional, intent(in) :: emph                                               !< which info(s) to emphasize
+
   character(len=:), allocatable :: msg
 
 
@@ -304,9 +386,7 @@ subroutine IO_error(error_ID,ext_msg,label1,ID1,label2,ID2)
 !--------------------------------------------------------------------------------------------------
 ! file handling errors
     case (100)
-      msg = 'could not open file:'
-    case (102)
-      msg = 'could not read file:'
+      msg = 'file error'
 
 !--------------------------------------------------------------------------------------------------
 ! file parsing errors
@@ -320,15 +400,9 @@ subroutine IO_error(error_ID,ext_msg,label1,ID1,label2,ID2)
 !--------------------------------------------------------------------------------------------------
 ! lattice error messages
     case (130)
-      msg = 'unknown lattice structure encountered'
-    case (131)
-      msg = 'hex lattice structure with invalid c/a ratio'
+      msg = 'invalid crystal parameters'
     case (132)
       msg = 'invalid parameters for transformation'
-    case (134)
-      msg = 'negative lattice parameter'
-    case (135)
-      msg = 'zero entry on stiffness diagonal'
     case (137)
       msg = 'not defined for lattice structure'
     case (138)
@@ -336,14 +410,12 @@ subroutine IO_error(error_ID,ext_msg,label1,ID1,label2,ID2)
 
 !--------------------------------------------------------------------------------------------------
 ! errors related to the parsing of material.yaml
-    case (140)
-      msg = 'key not found'
     case (141)
       msg = 'number of chunks in string differs'
     case (142)
       msg = 'empty list'
     case (143)
-      msg = 'no value found for key'
+      msg = 'key error'
     case (144)
       msg = 'negative number systems requested'
     case (145)
@@ -401,6 +473,8 @@ subroutine IO_error(error_ID,ext_msg,label1,ID1,label2,ID2)
 ! user errors
     case (600)
       msg = 'only one source entry allowed'
+    case (601)
+      msg = 'invalid option'
     case (603)
       msg = 'invalid data for table'
     case (610)
@@ -425,12 +499,8 @@ subroutine IO_error(error_ID,ext_msg,label1,ID1,label2,ID2)
       msg = 'invalid YAML'
     case (704)
       msg = 'space expected after a colon for <key>: <value> pair'
-    case (705)
-      msg = 'unsupported feature'
     case (706)
       msg = 'type mismatch in YAML data node'
-    case (707)
-      msg = 'abrupt end of file'
     case (708)
       msg = '"---" expected after YAML file header'
     case (709)
@@ -440,8 +510,10 @@ subroutine IO_error(error_ID,ext_msg,label1,ID1,label2,ID2)
 
 !-------------------------------------------------------------------------------------------------
 ! errors related to the mesh solver
-    case (821)
-      msg = 'order not supported'
+    case (800)
+      msg = 'invalid mesh'
+    case (812)
+      msg = 'invalid boundary conditions'
 
 !-------------------------------------------------------------------------------------------------
 ! errors related to the grid solver
@@ -463,10 +535,6 @@ subroutine IO_error(error_ID,ext_msg,label1,ID1,label2,ID2)
       msg = 'non-positive restart frequency in grid load case'
     case (844)
       msg = 'invalid VTI file'
-    case (891)
-      msg = 'unknown solver type selected'
-    case (892)
-      msg = 'unknown filter type selected'
     case (894)
       msg = 'MPI error'
 
@@ -478,36 +546,71 @@ subroutine IO_error(error_ID,ext_msg,label1,ID1,label2,ID2)
 
   end select
 
-  call panel('error',error_ID,msg, &
-                     ext_msg=ext_msg, &
-                     label1=label1,ID1=ID1, &
-                     label2=label2,ID2=ID2)
-  call quit(9000+error_ID)
+  call panel('error',int(error_ID),msg, &
+             info_1,info_2,info_3,info_4,info_5,info_6,info_7,info_8,info_9, &
+             emph)
+  call quit(9000+int(error_ID))
 
-end subroutine IO_error
+end subroutine IO_error_new
+
+
+!--------------------------------------------------------------------------------------------------
+!> @brief Write error statements and terminate the run with exit #9xxx.
+!> @details Deprecated.
+!--------------------------------------------------------------------------------------------------
+subroutine IO_error_old(error_ID,ext_msg,label1,ID1,label2,ID2)
+
+  integer,                    intent(in) :: error_ID
+  character(len=*), optional, intent(in) :: ext_msg,label1,label2
+  integer,          optional, intent(in) :: ID1,ID2
+
+  character(len=:), allocatable :: msg_extra
+
+
+  if (.not. present(label1) .and. present(ID1)) error stop 'missing label for value 1'
+  if (.not. present(label2) .and. present(ID2)) error stop 'missing label for value 2'
+
+  msg_extra = ''
+  if (present(ext_msg)) msg_extra = msg_extra//ext_msg//IO_EOL
+  if (present(label1)) then
+    msg_extra = msg_extra//'at '//label1
+    if (present(ID1)) msg_extra = msg_extra//' '//IO_intAsStr(ID1)
+    msg_extra = msg_extra//IO_EOL
+  end if
+  if (present(label2)) then
+    msg_extra = msg_extra//'at '//label2
+    if (present(ID2)) msg_extra = msg_extra//' '//IO_intAsStr(ID2)
+    msg_extra = msg_extra//IO_EOL
+  end if
+
+  call IO_error_new(int(error_ID,pI16),msg_extra,IO_EOL)
+
+end subroutine IO_error_old
 
 
 !--------------------------------------------------------------------------------------------------
 !> @brief Write warning statements.
 !--------------------------------------------------------------------------------------------------
-subroutine IO_warning(warning_ID,ext_msg,label1,ID1,label2,ID2)
+subroutine IO_warning(warning_ID, &
+                      info_1,info_2,info_3,info_4,info_5,info_6,info_7,info_8,info_9, &
+                      emph)
 
-  integer,                    intent(in) :: warning_ID
-  character(len=*), optional, intent(in) :: ext_msg,label1,label2
-  integer,          optional, intent(in) :: ID1,ID2
+  integer,                         intent(in) :: warning_ID
+  class(*),              optional, intent(in) :: info_1,info_2,info_3,info_4,info_5,info_6,info_7,info_8,info_9
+  integer, dimension(:), optional, intent(in) :: emph                                               !< which info(s) to emphasize
 
   character(len=:), allocatable :: msg
 
 
   select case (warning_ID)
-    case (47)
-      msg = 'invalid parameter for FFTW'
+    case (10)
+      msg = 'deprecated keyword'
     case (207)
       msg = 'line truncated'
     case (600)
-      msg = 'crystallite responds elastically'
+      msg = 'failed to converge'
     case (601)
-      msg = 'stiffness close to zero'
+      msg = 'unexpected stiffness'
     case (709)
       msg = 'read only the first document'
 
@@ -515,124 +618,37 @@ subroutine IO_warning(warning_ID,ext_msg,label1,ID1,label2,ID2)
       error stop 'invalid warning number'
   end select
 
-  call panel('warning',warning_ID,msg, &
-             ext_msg=ext_msg, &
-             label1=label1,ID1=ID1, &
-             label2=label2,ID2=ID2)
+  call panel('warning',int(warning_ID),msg, &
+             info_1,info_2,info_3,info_4,info_5,info_6,info_7,info_8,info_9, &
+             emph)
 
 end subroutine IO_warning
 
 
 !--------------------------------------------------------------------------------------------------
-!> @brief Convert Windows (CRLF) to Unix (LF) line endings.
+!> @brief Test whether a file descriptor refers to a terminal.
+!> @detail A terminal is neither a file nor a redirected STDOUT/STDERR/STDIN.
+!>         This function cannot detect redirection when invoked via mpirun/mpiexec.
 !--------------------------------------------------------------------------------------------------
-pure function CRLF2LF(str)
+logical function IO_isaTTY(unit)
 
-  character(len=*), intent(in)  :: str
-  character(len=:), allocatable :: CRLF2LF
-
-  integer(pI64) :: c,n
+  integer, intent(in) :: unit
 
 
-  allocate(character(len=len_trim(str,pI64))::CRLF2LF)
-  if (len(CRLF2LF,pI64) == 0) return
+  select case(unit)
+#ifndef MARC_SOURCE
+    case (IO_STDOUT)
+      IO_isaTTY = .not. logical(IO_redirectedSTDOUT) .and. logical(isatty_stdout_C())
+    case (IO_STDERR)
+      IO_isaTTY = .not. logical(IO_redirectedSTDERR) .and. logical(isatty_stderr_C())
+    case (IO_STDIN)
+      IO_isaTTY = logical(isatty_stdin_C())
+#endif
+    case default
+      IO_isaTTY = .false.
+  end select
 
-  n = 0_pI64
-  do c=1_pI64, len_trim(str,pI64)
-    CRLF2LF(c-n:c-n) = str(c:c)
-    if (c == len_trim(str,pI64)) exit
-    if (str(c:c+1_pI64) == CR//LF) n = n + 1_pI64
-  end do
-
-  CRLF2LF = CRLF2LF(:c-n)
-
-end function CRLF2LF
-
-
-!--------------------------------------------------------------------------------------------------
-!> @brief Fortran 2023 tokenize (first form).
-!--------------------------------------------------------------------------------------------------
-pure subroutine tokenize(string,set,tokens)
-
-  character(len=*), intent(in) :: string, set
-  character(len=:), dimension(:), allocatable, intent(out) :: tokens
-
-  integer, allocatable, dimension(:,:) :: pos
-  integer :: i, s, e
-
-
-  allocate(pos(2,0))
-  e = 0
-  do while (e < verify(string,set,back=.true.))
-    s = e + merge(verify(string(e+1:),set),1,scan(string(e+1:),set)/=0)
-    e = s + merge(scan(string(s:),set)-2,len(string(s:))-1,scan(string(s:),set)/=0)
-    pos = reshape([pos,[s,e]],[2,size(pos)/2+1])
-  end do
-  allocate(character(len=merge(maxval(pos(2,:)-pos(1,:))+1,0,size(pos)>0))::tokens(size(pos,2)))
-  do i = 1, size(pos,2)
-    tokens(i) = string(pos(1,i):pos(2,i))
-  end do
-
-end subroutine tokenize
-
-
-!--------------------------------------------------------------------------------------------------
-!> @brief Write statements to standard error.
-!--------------------------------------------------------------------------------------------------
-subroutine panel(paneltype,ID,msg,ext_msg,label1,ID1,label2,ID2)
-
-  character(len=*),           intent(in) :: paneltype,msg
-  character(len=*), optional, intent(in) :: ext_msg,label1,label2
-  integer,                    intent(in) :: ID
-  integer,          optional, intent(in) :: ID1,ID2
-
-  character(len=pSTRLEN)                 :: formatString
-  integer, parameter                     :: panelwidth = 69
-  character(len=:), allocatable          :: msg_,ID_,msg1,msg2
-  character(len=*), parameter            :: DIVIDER = repeat('─',panelwidth)
-
-
-  if (.not. present(label1) .and. present(ID1)) error stop 'missing label for value 1'
-  if (.not. present(label2) .and. present(ID2)) error stop 'missing label for value 2'
-
-  ID_ = IO_intAsStr(ID)
-  if (present(label1)) msg1 = label1
-  if (present(label2)) msg2 = label2
-  if (present(ID1)) msg1 = msg1//' '//IO_intAsStr(ID1)
-  if (present(ID2)) msg2 = msg2//' '//IO_intAsStr(ID2)
-
-  if (paneltype == 'error')   msg_ = IO_color([255,0,0],  unit=IO_STDERR)//trim(msg)//IO_color(unit=IO_STDERR)
-  if (paneltype == 'warning') msg_ = IO_color([255,255,0],unit=IO_STDERR)//trim(msg)//IO_color(unit=IO_STDERR)
-  !$OMP CRITICAL (write2out)
-  write(IO_STDERR,'(/,a)')                ' ┌'//DIVIDER//'┐'
-  write(formatString,'(a,i2,a)') '(a,24x,a,1x,i0,',max(1,panelwidth-24-len_trim(paneltype)-1-len_trim(ID_)),'x,a)'
-  write(IO_STDERR,formatString)          ' │',trim(paneltype),ID,                                   '│'
-  write(IO_STDERR,'(a)')                  ' ├'//DIVIDER//'┤'
-  write(formatString,'(a,i3.3,a,i3.3,a)') '(1x,a4,a',max(1,len_trim(msg_)),',',&
-                                                     max(1,panelwidth+3-len_trim(msg)-4),'x,a)'
-  write(IO_STDERR,formatString)            '│ ',trim(msg_),                                         '│'
-  if (present(ext_msg)) then
-    write(formatString,'(a,i3.3,a,i3.3,a)') '(1x,a4,a',max(1,len_trim(ext_msg)),',',&
-                                                       max(1,panelwidth+3-len_trim(ext_msg)-4),'x,a)'
-    write(IO_STDERR,formatString)          '│ ',trim(ext_msg),                                      '│'
-  end if
-  if (present(label1)) then
-    write(formatString,'(a,i3.3,a,i3.3,a)') '(1x,a7,a',max(1,len_trim(msg1)),',',&
-                                                       max(1,panelwidth+3-len_trim(msg1)-7),'x,a)'
-    write(IO_STDERR,formatString)          '│ at ',trim(msg1),                                     '│'
-  end if
-  if (present(label2)) then
-    write(formatString,'(a,i3.3,a,i3.3,a)') '(1x,a7,a',max(1,len_trim(msg2)),',',&
-                                                       max(1,panelwidth+3-len_trim(msg2)-7),'x,a)'
-    write(IO_STDERR,formatString)          '│ at ',trim(msg2),                                     '│'
-  end if
-  write(formatString,'(a,i2.2,a)') '(a,',max(1,panelwidth),'x,a)'
-  write(IO_STDERR,formatString)          ' │',                                                     '│'
-  write(IO_STDERR,'(a)')                  ' └'//DIVIDER//'┘'
-  flush(IO_STDERR)
-  !$OMP END CRITICAL (write2out)
-
-end subroutine panel
+end function IO_isaTTY
 
 
 !--------------------------------------------------------------------------------------------------
@@ -666,6 +682,9 @@ subroutine IO_selfTest()
   if ('1234' /= IO_intAsStr(1234))                   error stop 'IO_intAsStr'
   if ('-12'  /= IO_intAsStr(-0012))                  error stop 'IO_intAsStr'
 
+  if ('-0.1200000' /= IO_realAsStr(-0.12_pREAL))        error stop 'IO_realAsStr'
+  if ('0.1234000E-31' /= IO_realAsStr(123.4e-34_pREAL)) error stop 'IO_realAsStr'
+
   if (CRLF2LF('') /= '')                             error stop 'CRLF2LF/0'
   if (CRLF2LF(LF)     /= LF)                         error stop 'CRLF2LF/1a'
   if (CRLF2LF(CR//LF) /= LF)                         error stop 'CRLF2LF/1b'
@@ -693,6 +712,7 @@ subroutine IO_selfTest()
   if ('abc,'//IO_EOL//'xxdefg,'//IO_EOL//'xxhij' /= IO_wrapLines('abc,defg, hij',filler='xx',length=4)) &
                                                      error stop 'IO_wrapLines/7'
 
+#if ((defined(__INTEL_COMPILER) && __INTEL_COMPILER_BUILD_DATE < 20240000) || !defined(__INTEL_COMPILER))
   call tokenize('','$',tokens)
   if (size(tokens) /= 0 .or. len(tokens) /=0) error stop 'tokenize empty'
   call tokenize('abcd','dcba',tokens)
@@ -724,8 +744,7 @@ subroutine IO_selfTest()
 
 
   contains
-  subroutine test_tokenize(input,delimiter,solution)
-
+  pure subroutine test_tokenize(input,delimiter,solution)
     character(len=*), intent(in) :: input, delimiter
     character(len=*), dimension(:), intent(in) :: solution
 
@@ -740,7 +759,263 @@ subroutine IO_selfTest()
     end do
 
   end subroutine test_tokenize
+#endif
 
 end subroutine IO_selfTest
+
+
+#ifndef MARC_SOURCE
+!--------------------------------------------------------------------------------------------------
+!> @brief Stop execution and report status.
+!> @details exits the program and reports current time and duration. Exit code 0 signals
+!> everything is fine. Exit code 1 signals an error, message according to IO_error.
+!--------------------------------------------------------------------------------------------------
+subroutine quit(stop_id)
+  use, intrinsic :: ISO_fortran_env, only: ERROR_UNIT, OUTPUT_UNIT
+#include <petsc/finclude/petscsys.h>
+  use PETScSys
+#ifndef PETSC_HAVE_MPI_F90MODULE_VISIBILITY
+  use MPI_f08
+#endif
+  use HDF5
+
+#ifndef PETSC_HAVE_MPI_F90MODULE_VISIBILITY
+  implicit none(type,external)
+#else
+  implicit none
+#endif
+
+  integer, intent(in) :: stop_id
+
+  integer, dimension(8) :: date_time
+  integer :: err_HDF5
+  integer(MPI_INTEGER_KIND) :: err_MPI, worldsize
+  PetscErrorCode :: err_PETSc
+
+
+  call H5Open_f(err_HDF5)                                                                           ! prevents error if not opened yet
+  if (err_HDF5 < 0) write(ERROR_UNIT,'(a,i0)') ' Error in H5Open_f ',err_HDF5
+  call H5Close_f(err_HDF5)
+  if (err_HDF5 < 0) write(ERROR_UNIT,'(a,i0)') ' Error in H5Close_f ',err_HDF5
+
+  call PetscFinalize(err_PETSc)
+
+  call date_and_time(values = date_time)
+  write(OUTPUT_UNIT,'(/,a)') ' DAMASK terminated on:'
+  print'(3x,a,1x,2(i2.2,a),i4.4)', 'Date:',date_time(3),'/',date_time(2),'/',date_time(1)
+  print'(3x,a,1x,2(i2.2,a),i2.2)', 'Time:',date_time(5),':',date_time(6),':',date_time(7)
+
+  if (stop_id == 0 .and. err_HDF5 == 0 .and. err_PETSC == 0) then
+    call MPI_Finalize(err_MPI)
+    if (err_MPI /= 0_MPI_INTEGER_KIND) error stop 'MPI_Finalize error'
+    stop 0                                                                                          ! normal termination
+  else
+    call MPI_Comm_size(MPI_COMM_WORLD,worldsize,err_MPI)
+    if (err_MPI /= 0_MPI_INTEGER_KIND) error stop 'MPI_Comm error'
+    if (stop_id /= 0 .and. worldsize > 1) call MPI_Abort(MPI_COMM_WORLD,1,err_MPI)
+    stop 1                                                                                          ! error (message from IO_error)
+  endif
+
+end subroutine quit
+
+!--------------------------------------------------------------------------------------------------
+!> @brief Print C string to Fortran stdout.
+!--------------------------------------------------------------------------------------------------
+subroutine IO_printCppString(C_STR) bind(C, name='F_IO_printCppString')
+
+  character(kind=C_CHAR), intent(in), dimension(*) :: c_str
+
+
+  write (IO_STDOUT, '(a)', advance='no') c_f_string(c_str)
+  flush(IO_STDOUT)
+
+end subroutine IO_printCppString
+#endif
+
+
+!--------------------------------------------------------------------------------------------------
+!> @brief Convert Windows (CRLF) to Unix (LF) line endings.
+!--------------------------------------------------------------------------------------------------
+pure function CRLF2LF(str)
+
+  character(len=*), intent(in)  :: str
+  character(len=:), allocatable :: CRLF2LF
+
+  integer(pI64) :: c,n
+
+
+  allocate(character(len=len_trim(str,pI64))::CRLF2LF)
+  if (len(CRLF2LF,pI64) == 0) return
+
+  n = 0_pI64
+  do c=1_pI64, len_trim(str,pI64)
+    CRLF2LF(c-n:c-n) = str(c:c)
+    if (c == len_trim(str,pI64)) exit
+    if (str(c:c+1_pI64) == CR//LF) n = n + 1_pI64
+  end do
+
+  CRLF2LF = CRLF2LF(:c-n)
+
+end function CRLF2LF
+
+#if ((defined(__INTEL_COMPILER) && __INTEL_COMPILER_BUILD_DATE < 20240000) || !defined(__INTEL_COMPILER))
+!--------------------------------------------------------------------------------------------------
+!> @brief Fortran 2023 "tokenize" (first form, without optional argument).
+!--------------------------------------------------------------------------------------------------
+pure subroutine tokenize(string,set,tokens)
+
+  character(len=*), intent(in) :: string, set
+  character(len=:), dimension(:), allocatable, intent(out) :: tokens
+
+  integer, allocatable, dimension(:,:) :: pos
+  integer :: i, s, e
+
+
+  allocate(pos(2,0))
+  e = 0
+  do while (e < verify(string,set,back=.true.))
+    s = e + merge(verify(string(e+1:),set),1,scan(string(e+1:),set)/=0)
+    e = s + merge(scan(string(s:),set)-2,len(string(s:))-1,scan(string(s:),set)/=0)
+    pos = reshape([pos,[s,e]],[2,size(pos)/2+1])
+  end do
+  allocate(character(len=merge(maxval(pos(2,:)-pos(1,:))+1,0,size(pos)>0))::tokens(size(pos,2)))
+  do i = 1, size(pos,2)
+    tokens(i) = string(pos(1,i):pos(2,i))
+  end do
+
+end subroutine tokenize
+#endif
+
+!--------------------------------------------------------------------------------------------------
+!> @brief Write statements to standard error.
+!--------------------------------------------------------------------------------------------------
+subroutine panel(paneltype,ID,msg, &
+                 info_1,info_2,info_3,info_4,info_5,info_6,info_7,info_8,info_9, &
+                 emph)
+
+  character(len=*),           intent(in) :: paneltype, &                                            !< either 'error' or 'warning'
+                                            msg                                                     !< general error/warning message
+  integer,                    intent(in) :: ID                                                      !< error/warning ID
+  class(*),         optional, intent(in) :: info_1,info_2,info_3,info_4,info_5,info_6,info_7,info_8,info_9 !< extra info
+  integer, dimension(:), optional, intent(in) :: emph                                               !< which info(s) to emphasize
+
+  integer, parameter :: panelwidth = 69
+  character(len=*), parameter :: DIVIDER = repeat('─',panelwidth)
+  character(len=pSTRLEN) :: formatString
+  character(len=:), allocatable :: heading, msg_, info_extra
+  character(len=:), dimension(:), allocatable :: info_split
+  integer :: len_corrected, &                                                                       !< string length corrected for control characters
+             i
+
+
+  ! Needed to avoid output glitches observed with Gfortran.
+  ! see https://fortran-lang.discourse.group/t/openmp-and-thread-safety-of-i-os-write-read/4567/19
+  !$OMP CRITICAL (internal_IO)
+  heading = paneltype//' '//IO_intAsStr(ID)
+
+  select case (paneltype)
+
+    case ('error')
+       msg_ = IO_color([255,0,0],  unit=IO_STDERR)//trim(msg)//IO_color(unit=IO_STDERR)
+    case ('warning')
+       msg_ = IO_color([255,192,0],unit=IO_STDERR)//trim(msg)//IO_color(unit=IO_STDERR)
+    case default
+       error stop 'invalid panel type: '//trim(paneltype)
+
+  end select
+
+  info_extra = as_str(info_1,is_emph(1,emph)) &
+            // as_str(info_2,is_emph(2,emph)) &
+            // as_str(info_3,is_emph(3,emph)) &
+            // as_str(info_4,is_emph(4,emph)) &
+            // as_str(info_5,is_emph(5,emph)) &
+            // as_str(info_6,is_emph(6,emph)) &
+            // as_str(info_7,is_emph(7,emph)) &
+            // as_str(info_8,is_emph(8,emph)) &
+            // as_str(info_9,is_emph(9,emph))
+  !$OMP END CRITICAL (internal_IO)
+
+  !$OMP CRITICAL (output_to_screen)
+  write(IO_STDERR,'(/,a)')                ' ┌'       //DIVIDER//        '┐'
+  write(formatString,'(a,i2,a)') '(a,24x,a,',max(1,panelwidth-24-len_trim(heading)),'x,a)'
+  write(IO_STDERR,formatString)           ' │',    trim(heading),       '│'
+  write(IO_STDERR,'(a)')                  ' ├'       //DIVIDER//        '┤'
+  write(formatString,'(a,i3.3,a,i3.3,a)') '(a,a',max(1,len_trim(msg_)),',',&
+                                                 max(1,panelwidth+3-len_trim(msg)-4),'x,a)'
+  write(IO_STDERR,formatString)           ' │ ',     trim(msg_),        '│'
+  if (len_trim(info_extra) > 0) then
+    call tokenize(info_extra,IO_EOL,info_split)
+    do i = 1, size(info_split)
+      info_extra = adjustl(info_split(i))
+      if (len_trim(info_extra) == 0) then
+        write(IO_STDERR,'(a)')            ' │'//repeat(' ',panelwidth)//'│'
+      else
+        len_corrected = len_trim(info_extra) - count([(info_extra(i:i)==IO_ESC,i=1,len_trim(info_extra))])*4
+        write(formatString,'(a,i3.3,a,i3.3,a)') '(a,a',max(1,len_trim(info_extra)),',',&
+                                                       max(1,panelwidth+3-len_corrected-4),'x,a)'
+        write(IO_STDERR,formatString)     ' │ ',    trim(info_extra),   '│'
+      end if
+    end do
+  endif
+  write(IO_STDERR,'(a)')                  ' └'       //DIVIDER//        '┘'
+  flush(IO_STDERR)
+  !$OMP END CRITICAL (output_to_screen)
+
+end subroutine panel
+
+
+!-----------------------------------------------------------------------------------------------
+!> @brief Convert to string with white space prefix and optional emphasis.
+!-----------------------------------------------------------------------------------------------
+function as_str(info,emph)
+
+  character(len=:), allocatable :: as_str
+  class(*), optional, intent(in) :: info                                                           !< info message
+  logical, intent(in) :: emph                                                                      !< whether info should be emphasized
+
+
+  if (present(info)) then
+    select type(info)
+      type is (character(*))
+        as_str = info
+      type is (integer)
+        as_str = IO_intAsStr(info)
+      type is (real(pREAL))
+        as_str = IO_realAsStr(info)
+      class default
+        error stop 'cannot convert info argument to string'
+    end select
+
+    if (emph) then
+      if (IO_colored .and. IO_isaTTY(IO_STDERR)) then
+        as_str = IO_EMPH//as_str//IO_FORMATRESET
+      else
+        as_str = IO_QUOTES(2:2)//as_str//IO_QUOTES(2:2)
+      end if
+    end if
+    as_str = ' '//as_str
+  else
+    as_str = ''
+  end if
+
+end function as_str
+
+!-----------------------------------------------------------------------------------------------
+!> @brief Determine whether info at given position has to be emphasized.
+!-----------------------------------------------------------------------------------------------
+pure logical function is_emph(idx,emph)
+
+  integer, intent(in) :: idx                                                                        !< index of considered info
+  integer, dimension(:), optional, intent(in) :: emph                                               !< which info(s) to emphasize
+
+
+  if (present(emph)) then
+    is_emph = any(emph == idx)
+  else
+    is_emph = .false.
+  end if
+
+end function is_emph
+
 
 end module IO

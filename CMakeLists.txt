@@ -1,5 +1,9 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
 cmake_minimum_required(VERSION 3.18.0)
+set(CMAKE_CXX_STANDARD 23)
+set(CMAKE_C_STANDARD 17)
 include(FindPkgConfig REQUIRED)
+include(CheckCXXSymbolExists REQUIRED)
 
 if(DEFINED ENV{PETSC_DIR})
   message("PETSC_DIR:\n$ENV{PETSC_DIR}\n")
@@ -10,87 +14,96 @@ endif()
 # Dummy project to determine compiler names and version
 project(Prerequisites LANGUAGES)
 set(ENV{PKG_CONFIG_PATH} "$ENV{PETSC_DIR}/$ENV{PETSC_ARCH}/lib/pkgconfig:$ENV{PKG_CONFIG_PATH}")
-pkg_check_modules(PETSC_MIN REQUIRED PETSc>=3.15.0 QUIET) #CMake does not support version range
-pkg_check_modules(PETSC REQUIRED PETSc<3.24.0)
+set(PETSC_VERSION_MINOR_MIN "19")
+set(PETSC_VERSION_MINOR_MAX "24")
+
+pkg_check_modules(PETSC_MIN REQUIRED PETSc>=3.${PETSC_VERSION_MINOR_MIN}.0 QUIET) #CMake does not support version range
+pkg_check_modules(PETSC REQUIRED PETSc<=3.${PETSC_VERSION_MINOR_MAX}.99)
 
 pkg_get_variable(CMAKE_Fortran_COMPILER PETSc fcompiler)
 pkg_get_variable(CMAKE_C_COMPILER PETSc ccompiler)
+pkg_get_variable(CMAKE_CXX_COMPILER PETSc cxxcompiler)
 
-# Solver determines name of project
-string(TOUPPER "${DAMASK_SOLVER}" DAMASK_SOLVER_UPPER)
-string(TOLOWER "${DAMASK_SOLVER}" DAMASK_SOLVER_LOWER)
-if("${DAMASK_SOLVER_UPPER}" MATCHES "^(GRID|MESH|TEST)$")
-  project("damask-${DAMASK_SOLVER_LOWER}" HOMEPAGE_URL https://damask-multiphysics.org LANGUAGES Fortran C)
+# Get version
+file(STRINGS ${PROJECT_SOURCE_DIR}/VERSION DAMASK_VERSION_STRING)
+string(REPLACE "-" ";" DAMASK_VERSION_LIST "${DAMASK_VERSION_STRING}")
+list(LENGTH DAMASK_VERSION_LIST CHUNKS)
+if(CHUNKS GREATER 2)
+  list(GET DAMASK_VERSION_LIST 0 DAMASK_VERSION_MAIN)
+  list(GET DAMASK_VERSION_LIST 1 DAMASK_VERSION_TWEAK)
+  list(GET DAMASK_VERSION_LIST 2 PROJECT_VERSION_HASH)
+  set(DAMASK_VERSION_CMAKE "${DAMASK_VERSION_MAIN}.${DAMASK_VERSION_TWEAK}")
 else()
-  message(FATAL_ERROR "Invalid solver: DAMASK_SOLVER=${DAMASK_SOLVER}")
+  set(DAMASK_VERSION_CMAKE "${DAMASK_VERSION_STRING}")
 endif()
-add_definitions("-D${DAMASK_SOLVER_UPPER}")
+
+project(DAMASK
+        DESCRIPTION "DAMASK multi-physics crystal plasticity simulation package"
+        HOMEPAGE_URL https://damask-multiphysics.org
+        LANGUAGES Fortran C CXX VERSION "${DAMASK_VERSION_CMAKE}")
 
 set(CMAKE_Fortran_PREPROCESS "ON")
+# https://gitlab.kitware.com/cmake/community/-/wikis/doc/cmake/RPATH-handling
+set(CMAKE_MACOSX_RPATH TRUE)
+set(CMAKE_SKIP_BUILD_RPATH TRUE)
+set(CMAKE_BUILD_WITH_INSTALL_RPATH TRUE)
+set(CMAKE_INSTALL_RPATH_USE_LINK_PATH TRUE)
 
-# EXPERIMENTAL: This might help to detect HDF5 and FFTW3 in the future if PETSc is not aware of them
-set(ENV{PKG_CONFIG_PATH} "$ENV{PETSC_DIR}/$ENV{PETSC_ARCH}/externalpackages:$ENV{PKG_CONFIG_PATH}")
-pkg_check_modules(HDF5 hdf5)
-pkg_check_modules(FFTW3 fftw3)
 pkg_check_modules(fYAML libfyaml)
-if(DAMASK_SOLVER_UPPER STREQUAL "GRID")
+set(Boost_DEBUG ON)
+find_package(Boost COMPONENTS program_options HINTS "$ENV{PETSC_DIR}/$ENV{PETSC_ARCH}/lib/cmake")
+
+# EXPERIMENTAL: This might help to detect external packages in future if PETSc is not aware of them
+pkg_check_modules(LAPACK lapack)
+pkg_check_modules(HDF5 hdf5)
+if(${GRID})
   pkg_check_modules(zlib zlib)
+  pkg_check_modules(FFTW3 fftw3)
 endif()
 
-file(STRINGS ${PROJECT_SOURCE_DIR}/VERSION DAMASK_VERSION)
-string(REPLACE "." ";" DAMASK_VERSION_LIST "${DAMASK_VERSION}")
-list(GET DAMASK_VERSION_LIST 0 DAMASK_VERSION_MAJOR)
-list(GET DAMASK_VERSION_LIST 1 DAMASK_VERSION_MINOR)
-list(GET DAMASK_VERSION_LIST 2 DAMASK_VERSION_PATCH)
-string(REPLACE "-" ";" DAMASK_VERSION_PATCH_LIST "${DAMASK_VERSION_PATCH}")
-list(LENGTH DAMASK_VERSION_PATCH_LIST PATCH_CHUNKS)
-if(PATCH_CHUNKS GREATER 1)
-    list(GET DAMASK_VERSION_PATCH_LIST 0 DAMASK_VERSION_PATCH)
-    list(GET DAMASK_VERSION_PATCH_LIST 2 DAMASK_VERSION_HASH)
+message("\nBuilding ${CMAKE_PROJECT_NAME} ${DAMASK_VERSION_STRING}\n")
+
+add_compile_definitions(PETSC)
+add_compile_definitions(PETSC_MINOR_MAX=${PETSC_VERSION_MINOR_MAX})
+add_compile_definitions(PETSC_MINOR_MIN=${PETSC_VERSION_MINOR_MIN})
+add_compile_definitions(DAMASK_VERSION="${DAMASK_VERSION_STRING}")
+add_compile_definitions(DAMASK_VERSION_MAJOR="${PROJECT_VERSION_MAJOR}")
+add_compile_definitions(DAMASK_VERSION_MINOR="${PROJECT_VERSION_MINOR}")
+add_compile_definitions(DAMASK_VERSION_PATCH="${PROJECT_VERSION_PATCH}")
+if(DEFINED PROJECT_VERSION_HASH)
+  add_compile_definitions(DAMASK_VERSION_HASH="${PROJECT_VERSION_HASH}")
 endif()
 
-message("\nBuilding ${CMAKE_PROJECT_NAME} ${DAMASK_VERSION}\n")
-
-add_definitions(-DPETSC)
-add_definitions(-DDAMASK_VERSION="${DAMASK_VERSION}")
-add_definitions(-DDAMASK_VERSION_MAJOR="${DAMASK_VERSION_MAJOR}")
-add_definitions(-DDAMASK_VERSION_MINOR="${DAMASK_VERSION_MINOR}")
-add_definitions(-DDAMASK_VERSION_PATCH="${DAMASK_VERSION_PATCH}")
-if(DEFINED DAMASK_VERSION_HASH)
-  add_definitions(-DDAMASK_VERSION_HASH="${DAMASK_VERSION_HASH}")
-endif()
-
-add_definitions(-DCMAKE_SYSTEM_NAME="${CMAKE_SYSTEM_NAME}")
-add_definitions(-DCMAKE_SYSTEM_PROCESSOR="${CMAKE_SYSTEM_PROCESSOR}")
-
-add_definitions(-DSTRLEN=256)
-add_definitions(-DPATHLEN=4096)
+add_compile_definitions(CMAKE_SYSTEM_NAME="${CMAKE_SYSTEM_NAME}")
+add_compile_definitions(CMAKE_SYSTEM_PROCESSOR="${CMAKE_SYSTEM_PROCESSOR}")
 
 if(PETSC_VERSION VERSION_EQUAL 3.17.0)
-  add_definitions("-DCHKERRQ=PetscCall")
+  add_compile_definitions("CHKERRQ=PetscCall")
 endif()
 if(PETSC_VERSION VERSION_LESS 3.23.0)
-  add_definitions("-DVecGetArray=VecGetArrayF90")
-  add_definitions("-DVecRestoreArray=VecRestoreArrayF90")
+  add_compile_definitions(
+    $<$<COMPILE_LANGUAGE:Fortran>:VecGetArray=VecGetArrayF90>
+    $<$<COMPILE_LANGUAGE:Fortran>:VecRestoreArray=VecRestoreArrayF90>
 
-  add_definitions("-DVecGetArrayRead=VecGetArrayReadF90")
-  add_definitions("-DVecRestoreArrayRead=VecRestoreArrayReadF90")
+    $<$<COMPILE_LANGUAGE:Fortran>:VecGetArrayRead=VecGetArrayReadF90>
+    $<$<COMPILE_LANGUAGE:Fortran>:VecRestoreArrayRead=VecRestoreArrayReadF90>
 
-  add_definitions("-DDMDAVecGetArray=DMDAVecGetArrayF90")
-  add_definitions("-DDMDAVecRestoreArray=DMDAVecRestoreArrayF90")
+    $<$<COMPILE_LANGUAGE:Fortran>:DMDAVecGetArray=DMDAVecGetArrayF90>
+    $<$<COMPILE_LANGUAGE:Fortran>:DMDAVecRestoreArray=DMDAVecRestoreArrayF90>
 
-  add_definitions("-DDMDAVecGetArrayRead=DMDAVecGetArrayReadF90")
-  add_definitions("-DDMDAVecRestoreArrayRead=DMDAVecRestoreArrayReadF90")
+    $<$<COMPILE_LANGUAGE:Fortran>:DMDAVecGetArrayRead=DMDAVecGetArrayReadF90>
+    $<$<COMPILE_LANGUAGE:Fortran>:DMDAVecRestoreArrayRead=DMDAVecRestoreArrayReadF90>
 
-  add_definitions("-DISGetIndices=ISGetIndicesF90")
-  add_definitions("-DISRestoreIndices=ISRestoreIndicesF90")
+    $<$<COMPILE_LANGUAGE:Fortran>:ISGetIndices=ISGetIndicesF90>
+    $<$<COMPILE_LANGUAGE:Fortran>:ISRestoreIndices=ISRestoreIndicesF90>
 
-  add_definitions("-DSNES_CONVERGED_USER=7")
-  add_definitions("-DSNES_CONVERGED_ITERATING=0")
-  add_definitions("-DSNES_DIVERGED_USER=-12")
+    $<$<COMPILE_LANGUAGE:Fortran>:SNES_CONVERGED_USER=7>
+    $<$<COMPILE_LANGUAGE:Fortran>:SNES_CONVERGED_ITERATING=0>
+    $<$<COMPILE_LANGUAGE:Fortran>:SNES_DIVERGED_USER=-12>
 
-  add_definitions("-DPETSCDTSIMPLEXQUAD_DEFAULT=-1")
-  add_definitions("-DINSERT_ALL_VALUES=5")
+    $<$<COMPILE_LANGUAGE:Fortran>:PETSCDTSIMPLEXQUAD_DEFAULT=-1>
+    $<$<COMPILE_LANGUAGE:Fortran>:INSERT_ALL_VALUES=5>
+  )
 endif()
 
 if(CMAKE_BUILD_TYPE STREQUAL "")
@@ -169,9 +182,11 @@ if(CMAKE_BUILD_TYPE STREQUAL "DEBUG")
 endif()
 
 set(CMAKE_Fortran_FLAGS_${CMAKE_BUILD_TYPE} "${CMAKE_Fortran_FLAGS_${CMAKE_BUILD_TYPE}} ${PETSC_INCLUDES} ${BUILDCMD_POST}")
+set(CMAKE_C_FLAGS_${CMAKE_BUILD_TYPE}       "${CMAKE_C_FLAGS_${CMAKE_BUILD_TYPE}}       ${PETSC_INCLUDES} ${BUILDCMD_POST}")
+set(CMAKE_CXX_FLAGS_${CMAKE_BUILD_TYPE}     "${CMAKE_CXX_FLAGS_${CMAKE_BUILD_TYPE}}     ${PETSC_INCLUDES} ${BUILDCMD_POST}")
 
-set(CMAKE_Fortran_LINK_EXECUTABLE "${CMAKE_Fortran_LINK_EXECUTABLE} <OBJECTS> -o <TARGET> <LINK_LIBRARIES> -L${PETSC_LIBRARY_DIRS} -lpetsc ${PETSC_EXTERNAL_LIB}")
-if(DAMASK_SOLVER_UPPER STREQUAL "GRID")
+set(CMAKE_Fortran_LINK_EXECUTABLE "${CMAKE_Fortran_LINK_EXECUTABLE} <LINK_FLAGS> <FLAGS> <OBJECTS> -o <TARGET> <LINK_LIBRARIES>")
+if(${GRID})
   set(CMAKE_Fortran_LINK_EXECUTABLE "${CMAKE_Fortran_LINK_EXECUTABLE} -lz")
 endif()
 
@@ -180,16 +195,23 @@ if(fYAML_FOUND STREQUAL "1")
   foreach(fYAML_LIBRARY ${fYAML_LIBRARIES})
     set(CMAKE_Fortran_LINK_EXECUTABLE "${CMAKE_Fortran_LINK_EXECUTABLE} -L${fYAML_LIBRARY_DIRS} -l${fYAML_LIBRARY}")
   endforeach()
-  add_definitions(-DFYAML)
+  add_compile_definitions(FYAML)
   pkg_get_variable(fYAML_INCLUDE_DIR libfyaml includedir) # fYAML_INCLUDE_DIRS and fYAML_CFLAGS are not working
   set(CMAKE_C_FLAGS_${CMAKE_BUILD_TYPE} "${CMAKE_C_FLAGS_${CMAKE_BUILD_TYPE}} -I${fYAML_INCLUDE_DIR}")
 endif()
 
-set(CMAKE_Fortran_LINK_EXECUTABLE "${CMAKE_Fortran_LINK_EXECUTABLE} ${BUILDCMD_POST}")
 
 message("Fortran Compiler Flags:\n${CMAKE_Fortran_FLAGS_${CMAKE_BUILD_TYPE}}\n")
 message("C Compiler Flags:\n${CMAKE_C_FLAGS_${CMAKE_BUILD_TYPE}}\n")
+message("C++ Compiler Flags:\n${CMAKE_CXX_FLAGS_${CMAKE_BUILD_TYPE}}\n")
 message("Fortran Linker Command:\n${CMAKE_Fortran_LINK_EXECUTABLE}\n")
 
 # location of code
 add_subdirectory(src)
+
+if(TEST)
+  include(CTest)
+  add_test(NAME fortran.unit COMMAND $<TARGET_FILE:DAMASK_test>)
+  set_tests_properties(fortran.unit PROPERTIES WORKING_DIRECTORY ${PROJECT_SOURCE_DIR})
+  add_subdirectory(tests/unit_cpp)
+endif()

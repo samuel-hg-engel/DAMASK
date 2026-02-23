@@ -1,12 +1,13 @@
+! SPDX-License-Identifier: AGPL-3.0-or-later
 !--------------------------------------------------------------------------------------------------
 !> @author Pratheek Shanthraj, Max-Planck-Institut für Eisenforschung GmbH
 !> @author Martin Diehl, Max-Planck-Institut für Eisenforschung GmbH
 !> @author Philip Eisenlohr, Max-Planck-Institut für Eisenforschung GmbH
 !> @brief Grid solver for mechanics: Spectral Polarisation
 !--------------------------------------------------------------------------------------------------
-module grid_mech_spectral_polarization                                                              ! "mechanics" => "mech": workaround for ifx
 #include <petsc/finclude/petscsnes.h>
 #include <petsc/finclude/petscdmda.h>
+module grid_mech_spectral_polarization                                                              ! "mechanics" => "mech": workaround for ifx
   use PETScDMDA
   use PETScSNES
 #ifndef PETSC_HAVE_MPI_F90MODULE_VISIBILITY
@@ -61,13 +62,13 @@ module grid_mech_spectral_polarization                                          
 ! PETSc data
   DM   :: DM_mech
   SNES :: SNES_mech
-  Vec  :: FandF_tau_PETSc
+  Vec  :: FandF_tau_vec
 
 !--------------------------------------------------------------------------------------------------
 ! common pointwise data
   real(pREAL), dimension(:,:,:,:,:), allocatable :: &
-    F_lastInc, &                                                                                    !< field of previous compatible deformation gradients
-    F_tau_lastInc, &                                                                                !< field of previous incompatible deformation gradient
+    F_lastinc, &                                                                                    !< field of previous compatible deformation gradients
+    F_tau_lastinc, &                                                                                !< field of previous incompatible deformation gradient
     Fdot, &                                                                                         !< field of assumed rate of compatible deformation gradient
     F_tauDot                                                                                        !< field of assumed rate of incopatible deformation gradient
 
@@ -76,7 +77,7 @@ module grid_mech_spectral_polarization                                          
   real(pREAL), dimension(3,3) :: &
     F_aimDot = 0.0_pREAL, &                                                                         !< assumed rate of average deformation gradient
     F_aim = math_I3, &                                                                              !< current prescribed deformation gradient
-    F_aim_lastInc = math_I3, &                                                                      !< previous average deformation gradient
+    F_aim_lastinc = math_I3, &                                                                      !< previous average deformation gradient
     F_av = 0.0_pREAL, &                                                                             !< average incompatible def grad field
     P_av = 0.0_pREAL, &                                                                             !< average 1st Piola--Kirchhoff stress
     P_aim = 0.0_pREAL
@@ -111,9 +112,9 @@ contains
 !--------------------------------------------------------------------------------------------------
 !> @brief Allocate all necessary fields and fill them with data, potentially from restart info.
 !--------------------------------------------------------------------------------------------------
-subroutine grid_mech_spectral_polarization_init(num_grid)
+subroutine grid_mech_spectral_polarization_init(num_grid_mech)
 
-  type(tDict), pointer, intent(in) :: num_grid
+  type(tDict), pointer, intent(in) :: num_grid_mech
 
   real(pREAL), dimension(3,3,cells(1),cells(2),cells3) :: P
   PetscErrorCode :: err_PETSc
@@ -125,8 +126,6 @@ subroutine grid_mech_spectral_polarization_init(num_grid)
   integer(MPI_INTEGER_KIND), dimension(0:worldsize-1) :: cells3_global
   real(pREAL), dimension(3,3,product(cells(1:2))*cells3) :: temp33n
   integer(HID_T) :: fileHandle, groupHandle
-  type(tDict), pointer :: &
-    num_grid_mech
   character(len=:), allocatable :: &
     extmsg, &
     petsc_options
@@ -139,8 +138,6 @@ subroutine grid_mech_spectral_polarization_init(num_grid)
 
 !-------------------------------------------------------------------------------------------------
 ! read numerical parameters and do sanity checks
-  num_grid_mech => num_grid%get_dict('mechanical',defaultVal=emptyDict)
-
   num%itmin           = num_grid_mech%get_asInt('N_iter_min',defaultVal=1)
   num%itmax           = num_grid_mech%get_asInt('N_iter_max',defaultVal=100)
   num%update_gamma    = num_grid_mech%get_asBool('update_gamma',defaultVal=.false.)
@@ -176,9 +173,9 @@ subroutine grid_mech_spectral_polarization_init(num_grid)
 
 !--------------------------------------------------------------------------------------------------
 ! allocate global fields
-  allocate(F_lastInc    (3,3,cells(1),cells(2),cells3),source = 0.0_pREAL)
+  allocate(F_lastinc    (3,3,cells(1),cells(2),cells3),source = 0.0_pREAL)
   allocate(Fdot         (3,3,cells(1),cells(2),cells3),source = 0.0_pREAL)
-  allocate(F_tau_lastInc(3,3,cells(1),cells(2),cells3),source = 0.0_pREAL)
+  allocate(F_tau_lastinc(3,3,cells(1),cells(2),cells3),source = 0.0_pREAL)
   allocate(F_tauDot     (3,3,cells(1),cells(2),cells3),source = 0.0_pREAL)
 
 !--------------------------------------------------------------------------------------------------
@@ -203,9 +200,9 @@ subroutine grid_mech_spectral_polarization_init(num_grid)
   CHKERRQ(err_PETSc)
   call DMsetUp(DM_mech,err_PETSc)
   CHKERRQ(err_PETSc)
-  call DMcreateGlobalVector(DM_mech,FandF_tau_PETSc,err_PETSc)                                      ! global solution vector (cells x 18, i.e. every def grad tensor)
+  call DMcreateGlobalVector(DM_mech,FandF_tau_vec,err_PETSc)                                        ! global solution vector (cells x 18, i.e. every def grad tensor)
   CHKERRQ(err_PETSc)
-  call DMDASNESsetFunctionLocal(DM_mech,INSERT_VALUES,formResidual,PETSC_NULL_SNES,err_PETSc)       ! residual vector of same shape as solution vector
+  call DMDASNESsetFunctionLocal(DM_mech,INSERT_VALUES,form_residual,PETSC_NULL_SNES,err_PETSc)      ! residual vector of same shape as solution vector
   CHKERRQ(err_PETSc)
   call SNESsetConvergenceTest(SNES_mech,converged,PETSC_NULL_SNES,PETSC_NULL_FUNCTION,err_PETSc)    ! specify custom convergence check function "converged"
   CHKERRQ(err_PETSc)
@@ -216,7 +213,7 @@ subroutine grid_mech_spectral_polarization_init(num_grid)
 
 !--------------------------------------------------------------------------------------------------
 ! init fields
-  call DMDAVecGetArray(DM_mech,FandF_tau_PETSc,FandF_tau,err_PETSc)                                 ! places pointer on PETSc data
+  call DMDAVecGetArray(DM_mech,FandF_tau_vec,FandF_tau,err_PETSc)                                   ! places pointer on PETSc data
   CHKERRQ(err_PETSc)
   F     => FandF_tau(0: 8,:,:,:)
   F_tau => FandF_tau(9:17,:,:,:)
@@ -224,7 +221,7 @@ subroutine grid_mech_spectral_polarization_init(num_grid)
   restartRead: if (CLI_restartInc > 0) then
     print '(/,1x,a,1x,i0)', 'loading restart data of increment', CLI_restartInc
 
-    fileHandle  = HDF5_openFile(getSolverJobName()//'_restart.hdf5','r')
+    fileHandle  = HDF5_openFile(CLI_jobName//'_restart.hdf5','r')
     groupHandle = HDF5_openGroup(fileHandle,'solver')
 
     call HDF5_read(P_aim,groupHandle,'P_aim',.false.)
@@ -233,32 +230,32 @@ subroutine grid_mech_spectral_polarization_init(num_grid)
     call HDF5_read(F_aim,groupHandle,'F_aim',.false.)
     call MPI_Bcast(F_aim,9_MPI_INTEGER_KIND,MPI_DOUBLE,0_MPI_INTEGER_KIND,MPI_COMM_WORLD,err_MPI)
     call parallelization_chkerr(err_MPI)
-    call HDF5_read(F_aim_lastInc,groupHandle,'F_aim_lastInc',.false.)
-    call MPI_Bcast(F_aim_lastInc,9_MPI_INTEGER_KIND,MPI_DOUBLE,0_MPI_INTEGER_KIND,MPI_COMM_WORLD,err_MPI)
+    call HDF5_read(F_aim_lastinc,groupHandle,'F_aim_lastinc',.false.)
+    call MPI_Bcast(F_aim_lastinc,9_MPI_INTEGER_KIND,MPI_DOUBLE,0_MPI_INTEGER_KIND,MPI_COMM_WORLD,err_MPI)
     call parallelization_chkerr(err_MPI)
     call HDF5_read(F_aimDot,groupHandle,'F_aimDot',.false.)
     call MPI_Bcast(F_aimDot,9_MPI_INTEGER_KIND,MPI_DOUBLE,0_MPI_INTEGER_KIND,MPI_COMM_WORLD,err_MPI)
     call parallelization_chkerr(err_MPI)
     call HDF5_read(temp33n,groupHandle,'F')
     F = reshape(temp33n,[9,cells(1),cells(2),cells3])
-    call HDF5_read(temp33n,groupHandle,'F_lastInc')
-    F_lastInc = reshape(temp33n,[3,3,cells(1),cells(2),cells3])
+    call HDF5_read(temp33n,groupHandle,'F_lastinc')
+    F_lastinc = reshape(temp33n,[3,3,cells(1),cells(2),cells3])
     call HDF5_read(temp33n,groupHandle,'F_tau')
     F_tau = reshape(temp33n,[9,cells(1),cells(2),cells3])
-    call HDF5_read(temp33n,groupHandle,'F_tau_lastInc')
-    F_tau_lastInc = reshape(temp33n,[3,3,cells(1),cells(2),cells3])
+    call HDF5_read(temp33n,groupHandle,'F_tau_lastinc')
+    F_tau_lastinc = reshape(temp33n,[3,3,cells(1),cells(2),cells3])
   else restartRead
-    F_lastInc = spread(spread(spread(math_I3,3,cells(1)),4,cells(2)),5,cells3)                      ! initialize to identity
-    F = reshape(F_lastInc,[9,cells(1),cells(2),cells3])
+    F_lastinc = spread(spread(spread(math_I3,3,cells(1)),4,cells(2)),5,cells3)                      ! initialize to identity
+    F = reshape(F_lastinc,[9,cells(1),cells(2),cells3])
     F_tau = 2.0_pREAL*F
-    F_tau_lastInc = 2.0_pREAL*F_lastInc
+    F_tau_lastinc = 2.0_pREAL*F_lastinc
   end if restartRead
 
-  call utilities_updateCoords(reshape(F,shape(F_lastInc)))
+  call utilities_updateCoords(reshape(F,shape(F_lastinc)))
   call utilities_constitutiveResponse(status,P,P_av,C_volAvg,C_minMaxAvg, &                         ! stress field, stress avg, global average of stiffness and (min+max)/2
-                                      reshape(F,shape(F_lastInc)), &                                ! target F
+                                      reshape(F,shape(F_lastinc)), &                                ! target F
                                       0.0_pREAL)                                                    ! time increment
-  call DMDAVecRestoreArray(DM_mech,FandF_tau_PETSc,FandF_tau,err_PETSc)                             ! deassociate pointer
+  call DMDAVecRestoreArray(DM_mech,FandF_tau_vec,FandF_tau,err_PETSc)                               ! deassociate pointer
   CHKERRQ(err_PETSc)
 
   restartRead2: if (CLI_restartInc > 0) then
@@ -312,12 +309,12 @@ function grid_mech_spectral_polarization_solution(incInfoIn) result(solution)
     S_scale = math_invSym3333(C_minMaxAvg)
   end if
 
-  call SNESSolve(SNES_mech,PETSC_NULL_VEC,FandF_tau_PETSc,err_PETSc)
+  call SNESSolve(SNES_mech,PETSC_NULL_VEC,FandF_tau_vec,err_PETSc)
   CHKERRQ(err_PETSc)
   call SNESGetConvergedReason(SNES_mech,reason,err_PETSc)
   CHKERRQ(err_PETSc)
 
-#if (PETSC_VERSION_MAJOR==3 && PETSC_VERSION_MINOR<23)
+#if PETSC_VERSION_MINOR<23
   solution%converged = reason > SNES_CONVERGED_ITERATING
 #else
   solution%converged = reason%v > SNES_CONVERGED_ITERATING%v
@@ -353,7 +350,7 @@ subroutine grid_mech_spectral_polarization_forward(cutBack,guess,Delta_t,Delta_t
   real(pREAL), dimension(3,3) :: F_lambda33
 
 
-  call DMDAVecGetArray(DM_mech,FandF_tau_PETSc,FandF_tau,err_PETSc)
+  call DMDAVecGetArray(DM_mech,FandF_tau_vec,FandF_tau,err_PETSc)
   CHKERRQ(err_PETSc)
   F     => FandF_tau(0: 8,:,:,:)
   F_tau => FandF_tau(9:17,:,:,:)
@@ -365,46 +362,46 @@ subroutine grid_mech_spectral_polarization_forward(cutBack,guess,Delta_t,Delta_t
     C_volAvgLastInc    = C_volAvg
     C_minMaxAvgLastInc = C_minMaxAvg
 
-    F_aimDot = merge(merge(.0_pREAL,(F_aim-F_aim_lastInc)/Delta_t_old,stress_BC%mask),.0_pREAL,guess)  ! estimate deformation rate for prescribed stress components
-    F_aim_lastInc = F_aim
+    F_aimDot = merge(merge(.0_pREAL,(F_aim-F_aim_lastinc)/Delta_t_old,stress_BC%mask),.0_pREAL,guess)  ! estimate deformation rate for prescribed stress components
+    F_aim_lastinc = F_aim
 
     !-----------------------------------------------------------------------------------------------
     ! calculate rate for aim
     if     (deformation_BC%myType=='L') then                                                        ! calculate F_aimDot from given L and current F
       F_aimDot = F_aimDot &
-               + matmul(merge(.0_pREAL,deformation_BC%values,deformation_BC%mask),F_aim_lastInc)
+               + matmul(merge(.0_pREAL,deformation_BC%values,deformation_BC%mask),F_aim_lastinc)
     elseif (deformation_BC%myType=='dot_F') then                                                    ! F_aimDot is prescribed
       F_aimDot = F_aimDot &
                + merge(.0_pREAL,deformation_BC%values,deformation_BC%mask)
     elseif (deformation_BC%myType=='F') then                                                        ! aim at end of load case is prescribed
       F_aimDot = F_aimDot &
-               + merge(.0_pREAL,(deformation_BC%values - F_aim_lastInc)/t_remaining,deformation_BC%mask)
+               + merge(.0_pREAL,(deformation_BC%values - F_aim_lastinc)/t_remaining,deformation_BC%mask)
     end if
 
     Fdot     = utilities_calculateRate(guess, &
-                                       F_lastInc,reshape(F,[3,3,cells(1),cells(2),cells3]),Delta_t_old, &
+                                       F_lastinc,reshape(F,[3,3,cells(1),cells(2),cells3]),Delta_t_old, &
                                        rotation_BC%rotate(F_aimDot,active=.true.))
     F_tauDot = utilities_calculateRate(guess, &
-                                       F_tau_lastInc,reshape(F_tau,[3,3,cells(1),cells(2),cells3]), Delta_t_old, &
+                                       F_tau_lastinc,reshape(F_tau,[3,3,cells(1),cells(2),cells3]), Delta_t_old, &
                                        rotation_BC%rotate(F_aimDot,active=.true.))
-    F_lastInc     = reshape(F,    [3,3,cells(1),cells(2),cells3])
-    F_tau_lastInc = reshape(F_tau,[3,3,cells(1),cells(2),cells3])
+    F_lastinc     = reshape(F,    [3,3,cells(1),cells(2),cells3])
+    F_tau_lastinc = reshape(F_tau,[3,3,cells(1),cells(2),cells3])
 
   end if
 
 !--------------------------------------------------------------------------------------------------
 ! update average and local deformation gradients
-  F_aim = F_aim_lastInc + F_aimDot * Delta_t
+  F_aim = F_aim_lastinc + F_aimDot * Delta_t
   if (stress_BC%myType=='P')     P_aim = P_aim &
                                       + merge(.0_pREAL,(stress_BC%values - P_aim)/t_remaining,stress_BC%mask)*Delta_t
   if (stress_BC%myType=='dot_P') P_aim = P_aim &
                                       + merge(.0_pREAL,stress_BC%values,stress_BC%mask)*Delta_t
 
-  F = reshape(utilities_forwardTensorField(Delta_t,F_lastInc,Fdot, &                                ! estimate of F at end of time+Delta_t that matches rotated F_aim on average
+  F = reshape(utilities_forwardTensorField(Delta_t,F_lastinc,Fdot, &                                ! estimate of F at end of time+Delta_t that matches rotated F_aim on average
                                            rotation_BC%rotate(F_aim,active=.true.)),&
               [9,cells(1),cells(2),cells3])
   if (guess) then
-     F_tau = reshape(Utilities_forwardTensorField(Delta_t,F_tau_lastInc,F_taudot), &
+     F_tau = reshape(Utilities_forwardTensorField(Delta_t,F_tau_lastinc,F_taudot), &
                      [9,cells(1),cells(2),cells3])                                                  ! does not have any average value as boundary condition
    else
     do k = 1, cells3; do j = 1, cells(2); do i = 1, cells(1)
@@ -416,7 +413,7 @@ subroutine grid_mech_spectral_polarization_forward(cutBack,guess,Delta_t,Delta_t
     end do; end do; end do
   end if
 
-  call DMDAVecRestoreArray(DM_mech,FandF_tau_PETSc,FandF_tau,err_PETSc)
+  call DMDAVecRestoreArray(DM_mech,FandF_tau_vec,FandF_tau,err_PETSc)
   CHKERRQ(err_PETSc)
 
 !--------------------------------------------------------------------------------------------------
@@ -436,10 +433,10 @@ subroutine grid_mech_spectral_polarization_updateCoords()
   PetscErrorCode :: err_PETSc
   real(pREAL), dimension(:,:,:,:), pointer :: FandF_tau
 
-  call DMDAVecGetArrayRead(DM_mech,FandF_tau_PETSc,FandF_tau,err_PETSc)
+  call DMDAVecGetArrayRead(DM_mech,FandF_tau_vec,FandF_tau,err_PETSc)
   CHKERRQ(err_PETSc)
   call utilities_updateCoords(reshape(FandF_tau(0:8,:,:,:),[3,3,size(FandF_tau,2),size(FandF_tau,3),size(FandF_tau,4)]))
-  call DMDAVecRestoreArrayRead(DM_mech,FandF_tau_PETSc,FandF_tau,err_PETSc)
+  call DMDAVecRestoreArrayRead(DM_mech,FandF_tau_vec,FandF_tau,err_PETSc)
   CHKERRQ(err_PETSc)
 
 end subroutine grid_mech_spectral_polarization_updateCoords
@@ -455,7 +452,7 @@ subroutine grid_mech_spectral_polarization_restartWrite()
   real(pREAL), dimension(:,:,:,:), pointer :: FandF_tau, F, F_tau
 
 
-  call DMDAVecGetArrayRead(DM_mech,FandF_tau_PETSc,FandF_tau,err_PETSc)
+  call DMDAVecGetArrayRead(DM_mech,FandF_tau_vec,FandF_tau,err_PETSc)
   CHKERRQ(err_PETSc)
   F     => FandF_tau(0: 8,:,:,:)
   F_tau => FandF_tau(9:17,:,:,:)
@@ -464,21 +461,21 @@ subroutine grid_mech_spectral_polarization_restartWrite()
 
   print '(1x,a)', 'saving solver data required for restart'; flush(IO_STDOUT)
 
-  fileHandle  = HDF5_openFile(getSolverJobName()//'_restart.hdf5','a')
+  fileHandle  = HDF5_openFile(CLI_jobName//'_restart.hdf5','a')
   groupHandle = HDF5_addGroup(fileHandle,'solver')
   call HDF5_write(reshape(F,[3,3,product(shape(F))/9]),groupHandle,'F')
-  call HDF5_write(reshape(F_lastInc,[3,3,product(shape(F_lastInc))/9]),groupHandle,'F_lastInc')
+  call HDF5_write(reshape(F_lastinc,[3,3,product(shape(F_lastinc))/9]),groupHandle,'F_lastinc')
   call HDF5_write(reshape(F_tau,[3,3,product(shape(F_tau))/9]),groupHandle,'F_tau')
-  call HDF5_write(reshape(F_tau_lastInc,[3,3,product(shape(F_tau_lastInc))/9]),groupHandle,'F_tau_lastInc')
+  call HDF5_write(reshape(F_tau_lastinc,[3,3,product(shape(F_tau_lastinc))/9]),groupHandle,'F_tau_lastinc')
   call HDF5_closeGroup(groupHandle)
   call HDF5_closeFile(fileHandle)
 
   if (worldrank == 0) then
-    fileHandle  = HDF5_openFile(getSolverJobName()//'_restart.hdf5','a',.false.)
+    fileHandle  = HDF5_openFile(CLI_jobName//'_restart.hdf5','a',.false.)
     groupHandle = HDF5_openGroup(fileHandle,'solver')
-    call HDF5_write(F_aim,groupHandle,'P_aim',.false.)
+    call HDF5_write(P_aim,groupHandle,'P_aim',.false.)
     call HDF5_write(F_aim,groupHandle,'F_aim',.false.)
-    call HDF5_write(F_aim_lastInc,groupHandle,'F_aim_lastInc',.false.)
+    call HDF5_write(F_aim_lastinc,groupHandle,'F_aim_lastinc',.false.)
     call HDF5_write(F_aimDot,groupHandle,'F_aimDot',.false.)
     call HDF5_write(C_volAvg,groupHandle,'C_volAvg',.false.)
     call HDF5_write(C_volAvgLastInc,groupHandle,'C_volAvgLastInc',.false.)
@@ -487,14 +484,14 @@ subroutine grid_mech_spectral_polarization_restartWrite()
     call HDF5_closeFile(fileHandle)
   end if
 
-  call DMDAVecRestoreArrayRead(DM_mech,FandF_tau_PETSc,FandF_tau,err_PETSc)
+  call DMDAVecRestoreArrayRead(DM_mech,FandF_tau_vec,FandF_tau,err_PETSc)
   CHKERRQ(err_PETSc)
 
 end subroutine grid_mech_spectral_polarization_restartWrite
 
 
 !--------------------------------------------------------------------------------------------------
-!> @brief convergence check
+!> @brief Check for convergence.
 !--------------------------------------------------------------------------------------------------
 subroutine converged(snes_local,PETScIter,devNull1,devNull2,devNull3,reason,dummy,err_PETSc)
 
@@ -506,11 +503,13 @@ subroutine converged(snes_local,PETScIter,devNull1,devNull2,devNull3,reason,dumm
     devNull3
   SNESConvergedReason :: reason
   PetscObject :: dummy
-  PetscErrorCode :: err_PETSc
+  PetscErrorCode, intent(out) :: err_PETSc
+
   real(pREAL) :: &
     curlTol, &
     divTol, &
     BCTol
+
 
   curlTol = max(maxval(abs(F_aim-math_I3))*num%eps_curl_rtol, num%eps_curl_atol)
   divTol = max(maxval(abs(P_av))*num%eps_div_rtol, num%eps_div_atol)
@@ -542,10 +541,10 @@ end subroutine converged
 !--------------------------------------------------------------------------------------------------
 !> @brief Construct the residual vector.
 !--------------------------------------------------------------------------------------------------
-subroutine formResidual(residual_subdomain, FandF_tau, &
-                        r, dummy,err_PETSc)
+subroutine form_residual(residual_subdomain, FandF_tau, &
+                         r, dummy,err_PETSc)
 
-#if (PETSC_VERSION_MAJOR==3 && PETSC_VERSION_MINOR<22)
+#if PETSC_VERSION_MINOR<22
   DMDALocalInfo, dimension(DMDA_LOCAL_INFO_SIZE) :: &
 #else
   DMDALocalInfo :: &
@@ -556,7 +555,7 @@ subroutine formResidual(residual_subdomain, FandF_tau, &
   real(pREAL), dimension(3,3,2,cells(1),cells(2),cells3), target, intent(out) :: &
     r                                                                                               !< residuum field
   PetscObject :: dummy
-  PetscErrorCode :: err_PETSc
+  PetscErrorCode, intent(out) :: err_PETSc
 
   real(pREAL), pointer, dimension(:,:,:,:,:) :: &
     F, &
@@ -646,6 +645,6 @@ subroutine formResidual(residual_subdomain, FandF_tau, &
                             params%stress_mask)))
 
 
-end subroutine formResidual
+end subroutine form_residual
 
 end module grid_mech_spectral_polarization

@@ -1,3 +1,4 @@
+! SPDX-License-Identifier: AGPL-3.0-or-later
 !--------------------------------------------------------------------------------------------------
 !> @author Martin Diehl, Max-Planck-Institut für Eisenforschung GmbH
 !> @author Su Leen Wong, Max-Planck-Institut für Eisenforschung GmbH
@@ -168,13 +169,13 @@ module function plastic_dislotwin_init() result(myPlasticity)
   print'(/,1x,a,1x,i0)', '# phases:',count(myPlasticity); flush(IO_STDOUT)
 
   phases => config_material%get_dict('phase')
-  allocate(param(phases%length))
-  allocate(indexDotState(phases%length))
-  allocate(state(phases%length))
-  allocate(dependentState(phases%length))
+  allocate(param(size(phases)))
+  allocate(indexDotState(size(phases)))
+  allocate(state(size(phases)))
+  allocate(dependentState(size(phases)))
   extmsg = ''
 
-  do ph = 1, phases%length
+  do ph = 1, size(phases)
     if (.not. myPlasticity(ph)) cycle
 
     associate(prm => param(ph), &
@@ -182,8 +183,8 @@ module function plastic_dislotwin_init() result(myPlasticity)
               idx_dot => indexDotState(ph))
 
     phase => phases%get_dict(ph)
-    mech  => phase%get_dict('mechanical')
-    pl    => mech%get_dict('plastic')
+    mech => phase%get_dict('mechanical')
+    pl => mech%get_dict('plastic')
 
     print'(/,1x,a,1x,i0,a)', 'phase',ph,': '//phases%key(ph)
     refs = config_listReferences(pl,indent=3)
@@ -194,17 +195,21 @@ module function plastic_dislotwin_init() result(myPlasticity)
 #else
     prm%output = pl%get_as1dStr('output',defaultVal=emptyStrArray)
 #endif
+   if (any(prm%output == 'f_tw')) call IO_warning(10,'f_tw (twinned volume fraction)',IO_EOL, &
+                                                     'use gamma_tw (twinning shear)')
 
    prm%isotropic_bound = pl%get_asStr('isotropic_bound',defaultVal='isostrain')
 
 !--------------------------------------------------------------------------------------------------
 ! slip related parameters
-    N_sl         = pl%get_as1dInt('N_sl',defaultVal=emptyIntArray)
+    N_sl = pl%get_as1dInt('N_sl',defaultVal=emptyIntArray)
     prm%sum_N_sl = sum(abs(N_sl))
     slipActive: if (prm%sum_N_sl > 0) then
+      prm%P_sl = crystal_SchmidMatrix_slip(N_sl,phase_lattice(ph),phase_cOverA(ph))
       prm%systems_sl = crystal_labels_slip(N_sl,phase_lattice(ph))
-      prm%P_sl       = crystal_SchmidMatrix_slip(N_sl,phase_lattice(ph),phase_cOverA(ph))
-      prm%n0_sl      = crystal_slip_normal(N_sl,phase_lattice(ph),phase_cOverA(ph))
+      prm%n0_sl = crystal_slip_normal(N_sl,phase_lattice(ph),phase_cOverA(ph))
+
+      prm%h_sl_sl = crystal_interaction_SlipBySlip(N_sl,pl%get_as1dReal('h_sl-sl'),phase_lattice(ph))
 
       prm%extendedDislocations = pl%get_asBool('extend_dislocations',defaultVal=prm%extendedDislocations)
       prm%omitDipoles          = pl%get_asBool('omit_dipoles',       defaultVal=prm%omitDipoles)
@@ -233,7 +238,6 @@ module function plastic_dislotwin_init() result(myPlasticity)
                                                  defaultVal=[(0.0_pREAL,i=1,size(N_sl))]),N_sl)
       prm%d_caron  = prm%b_sl * pl%get_asReal('D_a')
 
-      prm%h_sl_sl = crystal_interaction_SlipBySlip(N_sl,pl%get_as1dReal('h_sl-sl'),phase_lattice(ph))
 
       prm%forestProjection = spread(          f_edge,1,prm%sum_N_sl) &
                            * crystal_forestProjection_edge (N_sl,phase_lattice(ph),phase_cOverA(ph)) &
@@ -282,9 +286,11 @@ module function plastic_dislotwin_init() result(myPlasticity)
     prm%N_tw = pl%get_as1dInt('N_tw', defaultVal=emptyIntArray)
     prm%sum_N_tw = sum(abs(prm%N_tw))
     twinActive: if (prm%sum_N_tw > 0) then
-      prm%systems_tw    = crystal_labels_twin(prm%N_tw,phase_lattice(ph))
-      prm%P_tw          = crystal_SchmidMatrix_twin(prm%N_tw,phase_lattice(ph),phase_cOverA(ph))
-      prm%gamma_char_tw = abs(crystal_characteristicShear_Twin(prm%N_tw,phase_lattice(ph),phase_cOverA(ph)))
+      prm%P_tw = crystal_SchmidMatrix_twin(prm%N_tw,phase_lattice(ph),phase_cOverA(ph))
+      prm%systems_tw = crystal_labels_twin(prm%N_tw,phase_lattice(ph))
+      prm%gamma_char_tw = abs(crystal_characteristicShear_twin(prm%N_tw,phase_lattice(ph),phase_cOverA(ph)))
+
+      prm%h_tw_tw = crystal_interaction_TwinByTwin(prm%N_tw,pl%get_as1dReal('h_tw-tw'), phase_lattice(ph))
 
       prm%L_tw = pl%get_asReal('L_tw')
       prm%i_tw = pl%get_asReal('i_tw')
@@ -292,9 +298,6 @@ module function plastic_dislotwin_init() result(myPlasticity)
       prm%b_tw = math_expand(pl%get_as1dReal('b_tw', requiredSize=size(prm%N_tw)),prm%N_tw)
       prm%t_tw = math_expand(pl%get_as1dReal('t_tw', requiredSize=size(prm%N_tw)),prm%N_tw)
       prm%r    = math_expand(pl%get_as1dReal('p_tw', requiredSize=size(prm%N_tw)),prm%N_tw)
-
-      prm%h_tw_tw = crystal_interaction_TwinByTwin(prm%N_tw,pl%get_as1dReal('h_tw-tw'), &
-                                                   phase_lattice(ph))
 
       ! sanity checks
       if (.not. prm%fccTwinTransNucleation)   extmsg = trim(extmsg)//' TWIP for non-fcc'
@@ -318,6 +321,7 @@ module function plastic_dislotwin_init() result(myPlasticity)
     prm%sum_N_tr = sum(abs(prm%N_tr))
     transActive: if (prm%sum_N_tr > 0) then
       prm%P_tr = crystal_SchmidMatrix_trans(prm%N_tr,'hP',prm%cOverA_hP)
+      prm%h_tr_tr = crystal_interaction_TransByTrans(prm%N_tr,pl%get_as1dReal('h_tr-tr'),phase_lattice(ph))
 
       prm%Delta_G = polynomial(pl,'Delta_G','T')
       prm%i_tr            = pl%get_asReal('i_tr')
@@ -332,9 +336,6 @@ module function plastic_dislotwin_init() result(myPlasticity)
       a_cF           = prm%b_tr(1)*sqrt(6.0_pREAL)                                                  ! b_tr is Shockley partial
       prm%h          = 5.0_pREAL * a_cF/sqrt(3.0_pREAL)
       prm%rho        = 4.0_pREAL/(sqrt(3.0_pREAL)*a_cF**2)/N_A
-      prm%h_tr_tr = crystal_interaction_TransByTrans(prm%N_tr,pl%get_as1dReal('h_tr-tr'),&
-                                                     phase_lattice(ph))
-
 
       ! sanity checks
       if (.not. prm%fccTwinTransNucleation)   extmsg = trim(extmsg)//' TRIP for non-fcc'
@@ -755,7 +756,7 @@ module subroutine dislotwin_dependentState(ph,en)
     sumf_tw = sum(stt%f_tw(1:prm%sum_N_tw,en))
     sumf_tr = sum(stt%f_tr(1:prm%sum_N_tr,en))
 
-    !* rescaled volume fraction for topology
+    ! rescaled volume fraction for topology
     f_over_t_tw = stt%f_tw(1:prm%sum_N_tw,en)/prm%t_tw                                              ! this is per system ...
     f_over_t_tr = sumf_tr/prm%t_tr                                                                  ! but this not
                                                                                                     ! ToDo ...Physically correct, but naming could be adjusted
@@ -814,6 +815,10 @@ module subroutine plastic_dislotwin_result(ph,group)
           call result_writeDataset(dst%tau_pass,group,trim(prm%output(ou)), &
                                    'passing stress for slip','Pa',prm%systems_sl)
 
+        case('gamma_tw')
+          call result_writeDataset(stt%f_tw*spread(prm%gamma_char_tw,2,size(stt%f_tw,2)), &
+                                   group,trim(prm%output(ou)), &
+                                   'twinning shear','1',prm%systems_tw)
         case('f_tw')
           call result_writeDataset(stt%f_tw,group,trim(prm%output(ou)), &
                                    'twinned volume fraction','m³/m³',prm%systems_tw)

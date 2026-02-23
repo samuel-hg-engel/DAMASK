@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
 """Miscellaneous helper functionality."""
 
 import sys as _sys
@@ -9,16 +10,20 @@ import re as _re
 import signal as _signal
 import fractions as _fractions
 import contextlib as _contextlib
-from collections import abc as _abc
+from collections import abc as _abc, defaultdict as _defaultdict
 from functools import reduce as _reduce, partial as _partial
 from pathlib import Path as _Path
-import logging
+import logging as _logging
 from typing import Optional as _Optional, Union as _Union, Iterable as _Iterable, \
                    Literal as _Literal, NamedTuple as _NamedTuple, \
                    Any as _Any, TextIO as _TextIO, Generator as _Generator
 
 import numpy as _np
 import h5py as _h5py
+try:
+    import numba as _nb                                                                             # type: ignore[import-not-found]
+except ImportError:
+    _nb = False
 
 from . import version as _version
 from ._typehints import FloatSequence as _FloatSequence, IntSequence as _IntSequence, \
@@ -29,22 +34,28 @@ class stdioTuple(_NamedTuple):
     stderr: str
 
 
-logger = logging.getLogger(__name__)
+logger = _logging.getLogger(__name__)
+
+version = _np.lib.NumpyVersion
 
 # https://svn.blender.org/svnroot/bf-blender/trunk/blender/build_files/scons/tools/bcolors.py
 # https://stackoverflow.com/questions/287871
-_colors = {
-           'header' :   '\033[95m',
-           'OK_blue':   '\033[94m',
-           'OK_green':  '\033[92m',
-           'warning':   '\033[93m',
-           'fail':      '\033[91m',
-           'end_color': '\033[0m',
-           'bold':      '\033[1m',
-           'dim':       '\033[2m',
-           'underline': '\033[4m',
-           'crossout':  '\033[9m'
-          }
+if 'NO_COLOR' not in _os.environ:
+   _formats = _defaultdict(str,
+              {
+               'header' :    '\033[95m',
+               'OK_blue':    '\033[94m',
+               'OK_green':   '\033[92m',
+               'warning':    '\033[93m',
+               'fail':       '\033[91m',
+               'bold':       '\033[1m',
+               'dim':        '\033[2m',
+               'underline':  '\033[4m',
+               'crossout':   '\033[9m',
+               'end_format': '\033[0m'
+              })
+else:
+   _formats = _defaultdict(str)
 
 ####################################################################################################
 # Functions
@@ -84,15 +95,15 @@ def emph(msg) -> str:
 
     Parameters
     ----------
-    msg : (sequence of) object with __repr__
+    msg : object with __repr__
         Message to format.
 
     Returns
     -------
     formatted : str
-        Formatted string representation of the joined items.
+        Formatted string representation of the message.
     """
-    return _colors['bold']+srepr(msg)+_colors['end_color']
+    return _formats['bold']+(msg if isinstance(msg,str) else repr(msg))+_formats['end_format']
 
 def deemph(msg) -> str:
     """
@@ -100,15 +111,15 @@ def deemph(msg) -> str:
 
     Parameters
     ----------
-    msg : (sequence of) object with __repr__
+    msg : object with __repr__
         Message to format.
 
     Returns
     -------
     formatted : str
-        Formatted string representation of the joined items.
+        Formatted string representation of the message.
     """
-    return _colors['dim']+srepr(msg)+_colors['end_color']
+    return _formats['dim']+(msg if isinstance(msg,str) else repr(msg))+_formats['end_format']
 
 def warn(msg) -> str:
     """
@@ -116,15 +127,15 @@ def warn(msg) -> str:
 
     Parameters
     ----------
-    msg : (sequence of) object with __repr__
+    msg :object with __repr__
         Message to format.
 
     Returns
     -------
     formatted : str
-        Formatted string representation of the joined items.
+        Formatted string representation of the message.
     """
-    return _colors['warning']+emph(msg)+_colors['end_color']
+    return _formats['warning']+emph(msg)+_formats['end_format']
 
 def strikeout(msg) -> str:
     """
@@ -132,15 +143,15 @@ def strikeout(msg) -> str:
 
     Parameters
     ----------
-    msg : (iterable of) object with __repr__
+    msg : object with __repr__
         Message to format.
 
     Returns
     -------
     formatted : str
-        Formatted string representation of the joined items.
+        Formatted string representation of the message.
     """
-    return _colors['crossout']+srepr(msg)+_colors['end_color']
+    return _formats['crossout']+(msg if isinstance(msg,str) else repr(msg))+_formats['end_format']
 
 
 def run(cmd: str,
@@ -196,6 +207,7 @@ def run(cmd: str,
 
     return stdioTuple(stdout, stderr)
 
+
 @_contextlib.contextmanager
 def open_text(fname: _FileHandle,
               mode: _Literal['r','w'] = 'r') -> _Generator[_TextIO, None, None]:                    # noqa
@@ -224,6 +236,7 @@ def open_text(fname: _FileHandle,
         fhandle.close()
     else:
         yield fname
+
 
 def time_stamp() -> str:
     """
@@ -377,11 +390,11 @@ def project_equal_angle(vector: _np.ndarray,
     --------
     >>> import damask
     >>> import numpy as np
-    >>> project_equal_angle(np.ones(3))
+    >>> project_equal_angle(vector=np.ones(3))
     array([0.3660, 0.3660])
-    >>> project_equal_angle(np.ones(3),direction='x',normalize=False,keepdims=True)
+    >>> project_equal_angle(vector=np.ones(3),direction='x',normalize=False,keepdims=True)
     array([0. , 0.5, 0.5])
-    >>> project_equal_angle([0,1,1],direction='y',normalize=True,keepdims=False)
+    >>> project_equal_angle(vector=[0,1,1],direction='y',normalize=True,keepdims=False)
     array([0.4142, 0. ])
     """
     shift = 'zyx'.index(direction)
@@ -424,11 +437,11 @@ def project_equal_area(vector: _np.ndarray,
     --------
     >>> import damask
     >>> import numpy as np
-    >>> project_equal_area(np.ones(3))
+    >>> project_equal_area(vector=np.ones(3))
     array([0.4597, 0.4597])
-    >>> project_equal_area(np.ones(3),direction='x',normalize=False,keepdims=True)
+    >>> project_equal_area(vector=np.ones(3),direction='x',normalize=False,keepdims=True)
     array([0. , 0.7071, 0.7071])
-    >>> project_equal_area([0,1,1],direction='y',normalize=True,keepdims=False)
+    >>> project_equal_area(vector=[0,1,1],direction='y',normalize=True,keepdims=False)
     array([0.5412, 0. ])
     """
     shift = 'zyx'.index(direction)
@@ -459,7 +472,7 @@ def hybrid_IA(dist: _FloatSequence,
     hist : numpy.ndarray, shape (N)
         Integer approximation of the distribution.
     """
-    N_opt_samples = max(_np.count_nonzero(dist),N)                                                  # random subsampling if too little samples requested
+    N_opt_samples = _np.maximum(_np.count_nonzero(dist),N)                                          # random subsampling if too little samples requested
     N_inv_samples = _np.int_(0)
 
     scale_,scale,inc_factor = (0.0,float(N_opt_samples),1.0)
@@ -506,7 +519,7 @@ def shapeshifter(fro: tuple[int, ...],
     >>> from damask import util
     >>> a = np.ones((3,4,2))
     >>> b = np.ones(4)
-    >>> b_extended = b.reshape(util.shapeshifter(b.shape,a.shape))
+    >>> b_extended = b.reshape(util.shapeshifter(fro=b.shape,to=a.shape))
     >>> (a * np.broadcast_to(b_extended,a.shape)).shape
     (3, 4, 2)
     """
@@ -553,19 +566,19 @@ def shapeblender(a: tuple[int, ...],
 
     Examples
     --------
-    >>> shapeblender((3,2),(3,2))
+    >>> shapeblender(a=(3,2),b=(3,2))
     (3, 2)
-    >>> shapeblender((4,3),(3,2))
+    >>> shapeblender(a=(4,3),b=(3,2))
     (4, 3, 2)
-    >>> shapeblender((4,4),(3,2))
+    >>> shapeblender(a=(4,4),b=(3,2))
     (4, 4, 3, 2)
-    >>> shapeblender((1,2),(1,2,3))
+    >>> shapeblender(a=(1,2),b=(1,2,3))
     (1, 2, 3)
-    >>> shapeblender((),(2,2,1))
+    >>> shapeblender(a=(),b=(2,2,1))
     (2, 2, 1)
-    >>> shapeblender((1,),(2,2,1))
+    >>> shapeblender(a=(1,),b=(2,2,1))
     (2, 2, 1)
-    >>> shapeblender((1,),(2,2,1),True)
+    >>> shapeblender(a=(1,),b=(2,2,1),keep_ones=True)
     (1, 2, 2, 1)
     """
     def is_broadcastable(a,b):
@@ -828,6 +841,30 @@ def to_list(a: _Any) -> list:
         Data in list.
     """
     return [a] if not hasattr(a,'__iter__') or isinstance(a,str) else list(a)
+
+
+def numba_njit_wrapper(**kwargs):
+    """
+    Return a decorator that applies `numba.njit` if Numba is available.
+
+    This function serves as a compatibility wrapper around Numba's `njit`
+    decorator. If the global variable `nb` (typically an imported `numba` module)
+    is defined, it applies `nb.njit` to the decorated function. Otherwise, it
+    returns the function unchanged, allowing code to run even when Numba is not
+    installed.
+
+    Parameters
+    ----------
+    **kwargs : dict
+        Currently unused, reserved for future compatibility or configuration
+        with `numba.njit`.
+
+    Returns
+    -------
+    callable
+        A decorator that conditionally applies `numba.njit` to a function.
+    """
+    return (lambda function: _nb.njit(function) if _nb else function)
 
 
 ####################################################################################################

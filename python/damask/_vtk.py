@@ -1,31 +1,48 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
 import os
 import multiprocessing as mp
-from pathlib import Path
 import logging
+import contextlib
+from pathlib import Path
 from typing import Optional, Union, Literal, Sequence
 
 import numpy as np
 
-from vtkmodules.vtkIOXML import vtkXMLReader, vtkXMLWriter
+# needed for visualization but might not be available everywhere
+# https://gitlab.kitware.com/vtk/vtk/-/issues/19687
+with contextlib.suppress(ImportError):
+    import vtkmodules.vtkRenderingOpenGL2                                                           # noqa
 
 from vtkmodules.vtkCommonCore import (
+    vtkVersion,
     vtkPoints,
     vtkStringArray,
     vtkLookupTable,
 )
+
+if has_vtkhdf := (np.lib.NumpyVersion(vtkVersion.GetVTKVersion()) >= '9.4.0'):
+    from vtkmodules.vtkIOHDF import vtkHDFReader, vtkHDFWriter
+
 from vtkmodules.vtkCommonDataModel import (
     vtkDataSet,
     vtkCellArray,
     vtkImageData,
     vtkRectilinearGrid,
     vtkUnstructuredGrid,
+    vtkPointData,
+    vtkCellData,
     vtkPolyData,
+    VTK_LAGRANGE_TRIANGLE,
+    VTK_LAGRANGE_QUADRILATERAL,
+    VTK_LAGRANGE_TETRAHEDRON,
+    VTK_LAGRANGE_HEXAHEDRON,
 )
 from vtkmodules.vtkIOLegacy import (
     vtkGenericDataObjectReader,
     vtkDataSetWriter,
 )
 from vtkmodules.vtkIOXML import (
+    vtkXMLWriter,
     vtkXMLImageDataReader,
     vtkXMLImageDataWriter,
     vtkXMLRectilinearGridReader,
@@ -44,12 +61,6 @@ from vtkmodules.vtkRenderingCore import (
 )
 from vtkmodules.vtkRenderingAnnotation import (
     vtkScalarBarActor,
-)
-from vtkmodules.util.vtkConstants import (
-    VTK_TRIANGLE,
-    VTK_QUAD,
-    VTK_TETRA,
-    VTK_HEXAHEDRON,
 )
 from vtkmodules.util.numpy_support import (
     numpy_to_vtk,
@@ -128,6 +139,7 @@ class VTK:
 
 
     def copy(self):
+        """Return a deep copy."""
         if   isinstance(self.vtk_data,vtkImageData):
             dup = vtkImageData()
         elif isinstance(self.vtk_data,vtkUnstructuredGrid):
@@ -136,8 +148,6 @@ class VTK:
             dup = vtkPolyData()
         elif isinstance(self.vtk_data,vtkRectilinearGrid):
             dup = vtkRectilinearGrid()
-        else:
-            raise TypeError
 
         dup.DeepCopy(self.vtk_data)
 
@@ -146,7 +156,7 @@ class VTK:
 
     @property
     def comments(self) -> list[str]:
-        """Return the comments."""
+        """Comments in vtkdata"""                                                                   # noqa: D415
         field_data = self.vtk_data.GetFieldData()
         for a in range(field_data.GetNumberOfArrays()):
             if field_data.GetArrayName(a) == 'comments':
@@ -163,7 +173,7 @@ class VTK:
         Parameters
         ----------
         comments : sequence of str
-            Comments.
+            Comments to assign to vtkdata.
         """
         s = vtkStringArray()
         s.SetName('comments')
@@ -174,19 +184,19 @@ class VTK:
 
     @property
     def N_points(self) -> int:
-        """Number of points in vtkdata."""
+        """Number of points in vtkdata"""                                                           # noqa: D415
         return self.vtk_data.GetNumberOfPoints()
 
 
     @property
     def N_cells(self) -> int:
-        """Number of cells in vtkdata."""
+        """Number of cells in vtkdata"""                                                            # noqa: D415
         return self.vtk_data.GetNumberOfCells()
 
 
     @property
     def labels(self):
-        """Labels of datasets."""
+        """Labels of datasets"""                                                                    # noqa: D415
         labels = {}
 
         cell_data = self.vtk_data.GetCellData()
@@ -222,6 +232,20 @@ class VTK:
         -------
         new : damask.VTK
             VTK-based geometry without nodal or cell data.
+
+        Examples
+        --------
+        Create image data with larger spacing along z-direction:
+
+        >>> import damask
+        >>> cells = (16,8,4)
+        >>> size = (1.0,0.5,.4)
+        >>> print(v := damask.VTK.from_image_data(cells=cells,size=size))
+        vtkImageData
+        <BLANKLINE>
+        # cells: 512
+        <BLANKLINE>
+        # points: 765
         """
         vtk_data = vtkImageData()
         vtk_data.SetDimensions(*(np.array(cells)+1))
@@ -234,11 +258,14 @@ class VTK:
     @staticmethod
     def from_unstructured_grid(nodes: np.ndarray,
                                connectivity: np.ndarray,
-                               cell_type: str) -> 'VTK':
+                               cell_type: Literal['TRIANGLE', 'TETRAHEDRON', 'QUADRILATERAL', 'HEXAHEDRON']
+                              ) -> 'VTK':
         """
         Create VTK of type vtkUnstructuredGrid.
 
         This is the common type for mesh solver results.
+        Elements are of the Lagrange type and all elements
+        should have the same type and order.
 
         Parameters
         ----------
@@ -247,13 +274,29 @@ class VTK:
         connectivity : numpy.ndarray of np.dtype = np.int64
             Cell connectivity (0-based), first dimension determines #Cells,
             second dimension determines #Nodes/Cell.
-        cell_type : str
-            Name of the vtkCell subclass. Tested for TRIANGLE, QUAD, TETRA, and HEXAHEDRON.
+        cell_type : {'TRIANGLE', 'QUADRILATERAL', 'TETRAHEDRON', 'HEXAHEDRON'}
+            Name of the vtkCell subclass.
 
         Returns
         -------
         new : damask.VTK
             VTK-based geometry without nodal or cell data.
+
+        Examples
+        --------
+        Create a first-order tetrahedron:
+
+        >>> import damask
+        >>> import numpy as np
+        >>> nodes = np.array([[0,0,0],[1,0,0],[1,1,0],[0,0,1]])
+        >>> connectivity = np.array([[0,1,2,3]])
+        >>> print(v := damask.VTK.from_unstructured_grid(nodes=nodes,connectivity=connectivity,
+        ...                                              cell_type='TETRAHEDRON'))
+        vtkUnstructuredGrid
+        <BLANKLINE>
+        # cells: 1
+        <BLANKLINE>
+        # points: 4
         """
         vtk_nodes = vtkPoints()
         vtk_nodes.SetData(numpy_to_vtk(np.ascontiguousarray(nodes)))
@@ -265,9 +308,10 @@ class VTK:
 
         vtk_data = vtkUnstructuredGrid()
         vtk_data.SetPoints(vtk_nodes)
-        cell_types = {'TRIANGLE':VTK_TRIANGLE, 'QUAD':VTK_QUAD,
-                      'TETRA'   :VTK_TETRA,    'HEXAHEDRON':VTK_HEXAHEDRON}
-        vtk_data.SetCells(cell_types[cell_type.split("_",1)[-1].upper()],cells)
+        # gracefully accept 'VTK_QUAD', 'vtk_lagrange_quadrilateral', etc.
+        cell_types = {'TRIA':VTK_LAGRANGE_TRIANGLE,    'QUAD':VTK_LAGRANGE_QUADRILATERAL,
+                      'TETR':VTK_LAGRANGE_TETRAHEDRON, 'HEXA':VTK_LAGRANGE_HEXAHEDRON}
+        vtk_data.SetCells(cell_types[cell_type.split('_')[-1].upper()[:4]],cells)
 
         return VTK(vtk_data)
 
@@ -341,7 +385,7 @@ class VTK:
         ----------
         fname : str or pathlib.Path
             Filename to read.
-            Valid extensions are .vti, .vtu, .vtp, .vtr, and .vtk.
+            Valid extensions are .vti, .vtu, .vtp, .vtr, vtkhdf, and .vtk.
         dataset_type : {'ImageData', 'UnstructuredGrid', 'PolyData', 'RectilinearGrid'}, optional
             Name of the vtkDataSet subclass when opening a .vtk file.
 
@@ -349,47 +393,49 @@ class VTK:
         -------
         loaded : damask.VTK
             VTK-based geometry from file.
+
+        Notes
+        -----
+        Loading VTKHDF files requires VTK 9.4 or later and presently supports
+        PolyData, UnstructuredGrid, and ImageData. Loading ImageData is untested
+        because VTK does not yet provide the functionality to write ImageData
+        into VTKHDF format.
         """
         if not Path(fname).expanduser().is_file():                                                  # vtk has a strange error handling
             raise FileNotFoundError(f'file "{fname}" not found')
+
         if (ext := Path(fname).suffix) == '.vtk' or dataset_type is not None:
-            vtk_reader = vtkGenericDataObjectReader()
-            vtk_reader.SetFileName(str(Path(fname).expanduser()))
+            reader_legacy = vtkGenericDataObjectReader()
+            reader_legacy.SetFileName(str(Path(fname).expanduser()))
+            reader_legacy.Update()
             if dataset_type is None:
-                raise TypeError('dataset type for *.vtk file not given')
-            vtk_reader.Update()
-            if dataset_type.lower().endswith(('imagedata', 'image_data')):
-                vtk_data = vtk_reader.GetStructuredPointsOutput()
-            elif dataset_type.lower().endswith(('unstructuredgrid', 'unstructured_grid')):
-                vtk_data = vtk_reader.GetUnstructuredGridOutput()
-            elif dataset_type.lower().endswith(('polydata', 'poly_data')):
-                vtk_data = vtk_reader.GetPolyDataOutput()
-            elif dataset_type.lower().endswith(('rectilineargrid', 'rectilinear_grid')):
-                vtk_data = vtk_reader.GetRectilinearGridOutput()
-            else:
-                raise TypeError(f'unknown dataset type "{dataset_type}" for vtk file')
+                raise TypeError('missing dataset type for legacy VTK file')
+            dtl = dataset_type.lower()
+            vtk_data = (
+                reader_legacy.GetStructuredPointsOutput() if dtl.endswith(('imagedata', 'image_data')) else
+                reader_legacy.GetUnstructuredGridOutput() if dtl.endswith(('unstructuredgrid', 'unstructured_grid')) else
+                reader_legacy.GetPolyDataOutput() if dtl.endswith(('polydata', 'poly_data')) else
+                reader_legacy.GetRectilinearGridOutput() if dtl.endswith(('rectilineargrid', 'rectilinear_grid')) else
+                None
+            )
+            if vtk_data is None:
+                raise TypeError(f'unsupported VTK dataset type "{dataset_type}"')
         else:
-            xml_reader: Optional[vtkXMLReader] = (
+            reader = (
                 vtkXMLImageDataReader() if ext == '.vti' else
                 vtkXMLUnstructuredGridReader() if ext == '.vtu' else
                 vtkXMLPolyDataReader() if ext == '.vtp' else
                 vtkXMLRectilinearGridReader() if ext == '.vtr' else
+                vtkHDFReader() if (ext == '.vtkhdf' and has_vtkhdf) else
                 None
             )
-            if xml_reader is None:
-                raise TypeError(f'unknown file extension "{ext}"')
-            xml_reader.SetFileName(str(Path(fname).expanduser()))
-            xml_reader.Update()
-            vtk_data = xml_reader.GetOutputAsDataSet()
+            if reader is None:
+                raise TypeError(f'unsupported VTK file extension "{ext}"')
+            reader.SetFileName(str(Path(fname).expanduser()))
+            reader.Update()
+            vtk_data = reader.GetOutputAsDataSet()
 
         return VTK(vtk_data)
-
-
-    @staticmethod
-    def _write(writer):
-        """Wrapper for parallel writing."""
-        writer.Write()
-
 
     def as_ASCII(self) -> str:
         """ASCII representation of the VTK data."""
@@ -400,6 +446,11 @@ class VTK:
         writer.Write()
         return writer.GetOutputString()
 
+
+    @staticmethod
+    def _write(writer):
+        """Wrapper for parallel writing."""
+        writer.Write()
 
     def save(self,
              fname: Union[str, Path],
@@ -424,8 +475,7 @@ class VTK:
             vtkXMLRectilinearGridWriter() if isinstance(self.vtk_data, vtkRectilinearGrid) else
             None
         )
-        if writer is None:
-            raise TypeError(f'unknown vtk_data type "{type(self.vtk_data)}"')
+        assert writer is not None
 
         default_ext = '.'+writer.GetDefaultFileExtension()
         ext = Path(fname).suffix
@@ -447,6 +497,33 @@ class VTK:
                 writer.Write()
         else:
             writer.Write()
+
+
+    def save_VTKHDF(self,
+                    fname: Union[str, Path]):
+        """
+        Save as VTKHDF file.
+
+        Parameters
+        ----------
+        fname : str or pathlib.Path
+            Filename to write.
+
+        Notes
+        -----
+        Saving as VTKHDF file requires VTK 9.4 or later and only supports
+        PolyData and UnstructuredGrid.
+        """
+        if not has_vtkhdf:
+            raise NotImplementedError('save as VTKHDF requires VTK 9.4 or later')
+        if not isinstance(self.vtk_data, (vtkPolyData, vtkUnstructuredGrid)):
+            raise TypeError(f'unsupported vtk_data type "{type(self.vtk_data)}"')
+
+        writer = vtkHDFWriter()
+        ext = Path(fname).suffix
+        writer.SetFileName(str(Path(fname).expanduser())+('.vtkhdf' if '.vtkhdf' != ext else ''))
+        writer.SetInputData(self.vtk_data)
+        writer.Write()
 
 
     def set(self,
@@ -482,6 +559,24 @@ class VTK:
         Notes
         -----
         If the number of cells equals the number of points, the data is added to both.
+
+
+        Examples
+        --------
+        Add a constant tensor field called 'F' to image data:
+
+        >>> import numpy as np
+        >>> import damask
+        >>> cells = (16,8,16)
+        >>> size = (1.0,0.5,1.0)
+        >>> v = damask.VTK.from_image_data(cells=cells,size=size)
+        >>> print(v := v.set(label='F',data=np.broadcast_to(np.eye(3),(np.prod(cells),3,3))))
+        vtkImageData
+        <BLANKLINE>
+        # cells: 2048
+          - F
+        <BLANKLINE>
+        # points: 2601
         """
 
         def _add_array(vtk_data,
@@ -520,13 +615,13 @@ class VTK:
                 _add_array(dup.vtk_data,
                            label,
                            np.where(data.mask,data.fill_value,data) if isinstance(data,np.ma.MaskedArray) else data)
-                if info is not None: dup.comments += [f'{label}: {info}']
+                if info is not None: dup.comments.append(f'{label}: {info}')
             else:
                 raise ValueError('no label defined for data')
         elif isinstance(table,Table):
             for l in table.labels:
                 _add_array(dup.vtk_data,l,table.get(l))
-                if info is not None: dup.comments += [f'{l}: {info}']
+                if info is not None: dup.comments.append(f'{l}: {info}')
         else:
             raise TypeError
 
@@ -552,25 +647,21 @@ class VTK:
         data : numpy.ndarray
             Data stored under the given label.
         """
-        cell_data = self.vtk_data.GetCellData()
-        if label in [cell_data.GetArrayName(a) for a in range(cell_data.GetNumberOfArrays())]:
-            try:
-                return vtk_to_numpy(cell_data.GetArray(label))
-            except AttributeError:
-                vtk_array = cell_data.GetAbstractArray(label)                                       # string array
+        cell_data: vtkCellData = self.vtk_data.GetCellData()
+        point_data: vtkPointData = self.vtk_data.GetPointData()
 
-        point_data = self.vtk_data.GetPointData()
-        if label in [point_data.GetArrayName(a) for a in range(point_data.GetNumberOfArrays())]:
-            try:
-                return vtk_to_numpy(point_data.GetArray(label))
-            except AttributeError:
-                vtk_array = point_data.GetAbstractArray(label)                                      # string array
+        if label in [cell_data.GetArrayName(i) for i in range(cell_data.GetNumberOfArrays())]:
+            vtk_container: Union[vtkPointData,vtkCellData] = cell_data
+        elif label in [point_data.GetArrayName(i) for i in range(point_data.GetNumberOfArrays())]:
+            vtk_container = point_data
+        else:
+            raise KeyError(f'array "{label}" not found in cell or point data')
 
         try:
-            # string array
+            return vtk_to_numpy(vtk_container.GetArray(label))
+        except AttributeError:                                                                       # assume string array
+            vtk_array = vtk_container.GetAbstractArray(label)
             return np.array([vtk_array.GetValue(i) for i in range(vtk_array.GetNumberOfValues())]).astype(str)
-        except UnboundLocalError:
-            raise KeyError(f'array "{label}" not found')
 
 
     def delete(self,

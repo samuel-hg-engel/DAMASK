@@ -1,3 +1,4 @@
+! SPDX-License-Identifier: AGPL-3.0-or-later
 !--------------------------------------------------------------------------------------------------
 !> @author   Franz Roters, Max-Planck-Institut für Eisenforschung GmbH
 !> @author   Philip Eisenlohr, Max-Planck-Institut für Eisenforschung GmbH
@@ -6,12 +7,14 @@
 !> @author   Luv Sharma, Max-Planck-Institut für Eisenforschung GmbH
 !> @brief    setting precision for real and int type
 !--------------------------------------------------------------------------------------------------
+#ifdef PETSC
+#include <petsc/finclude/petscsys.h>
+#endif
 module prec
   use, intrinsic :: IEEE_arithmetic
   use, intrinsic :: ISO_C_binding
 
 #ifdef PETSC
-#include <petsc/finclude/petscsys.h>
   use PETScSys
 #endif
 
@@ -19,20 +22,18 @@ module prec
   public
 
   ! https://stevelionel.com/drfortran/2017/03/27/doctor-fortran-in-it-takes-all-kinds
-  integer,     parameter :: pREAL      = IEEE_selected_real_kind(15,307)                            !< number with 15 significant digits, up to 1e+-307 (typically 64 bit)
-  integer,     parameter :: pI32       = selected_int_kind(9)                                       !< number with at least up to +-1e9 (typically 32 bit)
-  integer,     parameter :: pI64       = selected_int_kind(18)                                      !< number with at least up to +-1e18 (typically 64 bit)
+  integer, parameter :: pREAL = IEEE_selected_real_kind(15,307)                                     !< number with 15 significant digits, up to 1e+-307 (typically 64 bit)
+  integer, parameter :: pI16  = selected_int_kind(4)                                                !< number with at least up to +-1e4 (typically 16 bit)
+  integer, parameter :: pI32  = selected_int_kind(9)                                                !< number with at least up to +-1e9 (typically 32 bit)
+  integer, parameter :: pI64  = selected_int_kind(18)                                               !< number with at least up to +-1e18 (typically 64 bit)
 #ifdef PETSC
   PetscInt,        private   :: dummy_int
   PetscErrorCode,  private   :: dummy_error_code
   integer,         parameter :: pPETSCINT = kind(dummy_int)
   integer,         parameter :: pPETSCERRORCODE = kind(dummy_error_code)
-  integer,         parameter :: pSTRLEN = STRLEN                                                    !< default string length
-  integer,         parameter :: pPATHLEN = PATHLEN                                                  !< maximum length of a path name on linux
-#else
-  integer,         parameter :: pSTRLEN = 256                                                       !< default string length
-  integer,         parameter :: pPATHLEN = 4096                                                     !< maximum length of a path name on linux
 #endif
+  integer,         parameter :: pSTRLEN = 256                                                       !< default length for fixed length strings
+  integer,         parameter :: pPATHLEN = 4096                                                     !< maximum length of a path name on linux
 
   real(pREAL), parameter :: tol_math_check = 1.0e-8_pREAL                                           !< tolerance for internal math self-checks (rotation)
 
@@ -53,15 +54,29 @@ contains
 !--------------------------------------------------------------------------------------------------
 subroutine prec_init()
 
+#ifdef PETSC
+  PetscErrorCode :: err_PETSc
+#endif
+
+
   print'(/,1x,a)', '<<<+-  prec init  -+>>>'
 
-  print'(/,a,i3)',    ' integer size / bit:  ',bit_size(0)
-  print'(  a,i19)',   '   maximum value:     ',huge(0)
-  print'(/,a,i3)',    ' real size / bit:     ',storage_size(0.0_pREAL)
-  print'(  a,e10.3)', '   maximum value:     ',huge(0.0_pREAL)
-  print'(  a,e10.3)', '   minimum value:     ',PREAL_MIN
-  print'(  a,e10.3)', '   epsilon value:     ',PREAL_EPSILON
-  print'(  a,i3)',    '   decimal precision: ',precision(0.0_pREAL)
+  print'(/,a,i0)',    ' integer size / bit:  ',bit_size(0)
+  print'(  a,i0)',    '   maximum value:     ',huge(0)
+  print'(/,a,i0)',    ' real size / bit:     ',storage_size(0.0_pREAL)
+  print'(  a,e9.3)',  '   maximum value:     ',huge(0.0_pREAL)
+  print'(  a,e9.3)',  '   minimum value:     ',PREAL_MIN
+  print'(  a,e9.3)',  '   epsilon value:     ',PREAL_EPSILON
+  print'(  a,i0)',    '   decimal precision: ',precision(0.0_pREAL)
+
+#ifdef PETSC
+#ifdef DEBUG
+  call PetscSetFPTrap(PETSC_FP_TRAP_ON,err_PETSc)
+#else
+  call PetscSetFPTrap(PETSC_FP_TRAP_OFF,err_PETSc)
+#endif
+  CHKERRQ(err_PETSc)
+#endif
 
   call prec_selfTest()
 
@@ -254,12 +269,14 @@ subroutine prec_selfTest()
   real(pREAL),   dimension(1) :: f
   integer(pI64), dimension(1) :: i
   real(pREAL),   dimension(2) :: r
+  real(pREAL)                 :: NaN
 #ifdef PETSC
-  PetscScalar :: dummy_scalar
+  PetscReal :: dummy_scalar
 
 
   if (pREAL /= kind(dummy_scalar))          error stop 'PETSc and DAMASK scalar datatypes do not match'
 #endif
+
   realloc_lhs_test = [1,2]
   if (any(realloc_lhs_test/=[1,2]))         error stop 'LHS allocation'
 
@@ -268,6 +285,31 @@ subroutine prec_selfTest()
   if (.not. all(dEq(r,r+PREAL_EPSILON)))    error stop 'dEq'
   if (dEq(r(1),r(2)) .and. dNeq(r(1),r(2))) error stop 'dNeq'
   if (.not. all(dEq0(r-(r+PREAL_MIN))))     error stop 'dEq0'
+
+  NaN = IEEE_value(1.0_pREAL, IEEE_QUIET_NAN)
+
+  ! even silent NaN causes issues with  PETSc's SetFPTrap
+#ifndef DEBUG
+  if (dEq(NaN,NaN))                         error stop 'dEq/(NaN,NaN)'
+  if (dEq(NaN,r(1)))                        error stop 'dEq/(NaN,float)'
+  if (dEq(r(1),NaN))                        error stop 'dEq/(float,NaN)'
+  if (dEq0(NaN))                            error stop 'dEq0/(NaN)'
+
+  if (.not. dNeq(NaN,NaN))                  error stop 'dNeq/(NaN,NaN)'
+  if (.not. dNeq(NaN,r(1)))                 error stop 'dNeq/(NaN,float)'
+  if (.not. dNeq(r(1),NaN))                 error stop 'dNeq/(float,NaN)'
+  if (.not. dNeq0(NaN))                     error stop 'dNeq0/(NaN)'
+
+  if (dEq(NaN,NaN,huge(1._pREAL)))          error stop 'dEq/(NaN,NaN,tol)'
+  if (dEq(NaN,r(1),huge(1._pREAL)))         error stop 'dEq/(NaN,float,tol)'
+  if (dEq(r(1),NaN,huge(1._pREAL)))         error stop 'dEq/(float,NaN,tol)'
+  if (dEq0(NaN,huge(1._pREAL)))             error stop 'dEq0/(NaN,tol)'
+
+  if (.not. dNeq(NaN,NaN,huge(1._pREAL)))   error stop 'dNeq/(NaN,NaN,tol)'
+  if (.not. dNeq(NaN,r(1),huge(1._pREAL)))  error stop 'dNeq/(NaN,float,tol)'
+  if (.not. dNeq(r(1),NaN,huge(1._pREAL)))  error stop 'dNeq/(float,NaN,tol)'
+  if (.not. dNeq0(NaN,huge(1._pREAL)))      error stop 'dNeq0/(NaN,tol)'
+#endif
 
   ! https://www.binaryconvert.com
   ! https://www.rapidtables.com/convert/number/binary-to-decimal.html

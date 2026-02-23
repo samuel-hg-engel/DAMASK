@@ -1,3 +1,4 @@
+! SPDX-License-Identifier: AGPL-3.0-or-later
 !--------------------------------------------------------------------------------------------------
 !> @author Franz Roters, Max-Planck-Institut für Eisenforschung GmbH
 !> @author Philip Eisenlohr, Max-Planck-Institut für Eisenforschung GmbH
@@ -226,14 +227,14 @@ module crystal
        2, -1, -1,  0,     0,  1, -1,  0, &
       -1,  2, -1,  0,    -1,  0,  1,  0, &
       -1, -1,  2,  0,     1, -1,  0,  0, &
-    ! <-1-1.0>{-11.1}/1. order pyramidal <a> systems (direction independent of c/a-ratio)
+    ! <-1-1.0>{-11.1}/1st order pyramidal <a> systems (direction independent of c/a-ratio)
       -1,  2, -1,  0,     1,  0, -1,  1, &
       -2,  1,  1,  0,     0,  1, -1,  1, &
       -1, -1,  2,  0,    -1,  1,  0,  1, &
        1, -2,  1,  0,    -1,  0,  1,  1, &
        2, -1, -1,  0,     0, -1,  1,  1, &
        1,  1, -2,  0,     1, -1,  0,  1, &
-    ! <11.3>{-10.1}/1. order pyramidal <c+a> systems (direction independent of c/a-ratio)
+    ! <11.3>{-10.1}/1st order pyramidal <c+a> systems (direction independent of c/a-ratio)
       -2,  1,  1,  3,     1,  0, -1,  1, &
       -1, -1,  2,  3,     1,  0, -1,  1, &
       -1, -1,  2,  3,     0,  1, -1,  1, &
@@ -246,7 +247,7 @@ module crystal
       -1,  2, -1,  3,     0, -1,  1,  1, &
       -1,  2, -1,  3,     1, -1,  0,  1, &
       -2,  1,  1,  3,     1, -1,  0,  1, &
-    ! <11.3>{-1-1.2}/2. order pyramidal <c+a> systems
+    ! <11.3>{-1-1.2}/2nd order pyramidal <c+a> systems
       -1, -1,  2,  3,     1,  1, -2,  2, &
        1, -2,  1,  3,    -1,  2, -1,  2, &
        2, -1, -1,  3,    -2,  1,  1,  2, &
@@ -453,7 +454,7 @@ function crystal_characteristicShear_Twin(Ntwin,lattice,CoverA) result(character
     ! https://doi.org/10.1016/0079-6425(94)00007-7, Table 3 with reversed signs for modes that shear in tension and compression
     case('hP')
       if (cOverA < 1.0_pREAL .or. cOverA > 3.0_pREAL) &
-        call IO_error(131,ext_msg='crystal_characteristicShear_Twin')
+        call IO_error(130_pI16,'c/a for hP lattice not in range [1,3]', cOverA, emph=[2])
 
       myFamilies: do f = 1,size(Ntwin,1)
         s = sum(Ntwin(:f-1)) + 1
@@ -519,11 +520,11 @@ end function crystal_C66_twin
 !--------------------------------------------------------------------------------------------------
 !> @brief Rotated elasticity matrices for transformation in 6x6-matrix notation
 !--------------------------------------------------------------------------------------------------
-function crystal_C66_trans(Ntrans,C_parent66,crystal_target, &
+function crystal_C66_trans(Ntrans,C_parent66,lattice_target, &
                            cOverA_trans,a_cF,a_cI)
 
   integer,     dimension(:),             intent(in) :: Ntrans                                       !< number of active twin systems per family
-  character(len=*),                      intent(in) :: crystal_target                               !< Bravais lattice (Pearson symbol)
+  character(len=*),                      intent(in) :: lattice_target                               !< Bravais lattice (Pearson symbol)
   real(pREAL), dimension(6,6),           intent(in) :: C_parent66
   real(pREAL),                 optional, intent(in) :: cOverA_trans, a_cF, a_cI
   real(pREAL), dimension(6,6,sum(Ntrans))           :: crystal_C66_trans
@@ -535,11 +536,15 @@ function crystal_C66_trans(Ntrans,C_parent66,crystal_target, &
 
  !--------------------------------------------------------------------------------------------------
  ! elasticity matrix of the target phase in cube orientation
-  if (crystal_target == 'hP' .and. present(cOverA_trans)) then
+  if (lattice_target  == 'cI' .and. present(a_cF) .and. present(a_cI)) then
+    if (a_cI <= 0.0_pREAL .or. a_cF <= 0.0_pREAL) &
+      call IO_error(130_pI16,'negative lattice parameter a', min(a_cI,a_cF), emph=[2])
+    C_target_unrotated66 = C_parent66
+  elseif (lattice_target == 'hP' .and. present(cOverA_trans)) then
     ! https://doi.org/10.1063/1.1663858 eq. (16), eq. (18), eq. (19)
     ! https://doi.org/10.1016/j.actamat.2016.07.032 eq. (47), eq. (48)
-    if (cOverA_trans < 1.0_pREAL .or. cOverA_trans > 2.0_pREAL) &
-      call IO_error(131,ext_msg='crystal_C66_trans: '//trim(crystal_target))
+    if (cOverA_trans < 1.0_pREAL .or. cOverA_trans > 3.0_pREAL) &
+      call IO_error(130_pI16,'c/a for hP target lattice not in range [1,3]', cOverA_trans, emph=[2])
     C_bar66(1,1) = (C_parent66(1,1) + C_parent66(1,2) + 2.0_pREAL*C_parent66(4,4))/2.0_pREAL
     C_bar66(1,2) = (C_parent66(1,1) + 5.0_pREAL*C_parent66(1,2) - 2.0_pREAL*C_parent66(4,4))/6.0_pREAL
     C_bar66(3,3) = (C_parent66(1,1) + 2.0_pREAL*C_parent66(1,2) + 4.0_pREAL*C_parent66(4,4))/3.0_pREAL
@@ -554,17 +559,15 @@ function crystal_C66_trans(Ntrans,C_parent66,crystal_target, &
     C_target_unrotated66(3,3) = C_bar66(3,3)
     C_target_unrotated66(4,4) = C_bar66(4,4) - C_bar66(1,4)**2/(0.5_pREAL*(C_bar66(1,1) - C_bar66(1,2)))
     C_target_unrotated66 = crystal_symmetrize_C66(C_target_unrotated66,'hP')
-  elseif (crystal_target  == 'cI' .and. present(a_cF) .and. present(a_cI)) then
-    if (a_cI <= 0.0_pREAL .or. a_cF <= 0.0_pREAL) &
-      call IO_error(134,ext_msg='crystal_C66_trans: '//trim(crystal_target))
-    C_target_unrotated66 = C_parent66
+  elseif (all(lattice_target /= ['cI','hP'])) then
+    call IO_error(130_pI16,'invalid target lattice',lattice_target,emph=[2])
   else
-    call IO_error(137,ext_msg='crystal_C66_trans : '//trim(crystal_target))
+    call IO_error(130_pI16,'lattice parameters for target lattice not given', lattice_target, emph=[2])
   end if
 
   do i = 1,6
     if (abs(C_target_unrotated66(i,i))<tol_math_check) &
-    call IO_error(135,'matrix diagonal in transformation',label1='entry',ID1=i)
+      call IO_error(130_pI16,'zero entry in elasticity matrix at', i, i, emph=[2,3])
   end do
 
   call buildTransformationSystem(Q,S,Ntrans,cOverA_trans,a_cF,a_cI)
@@ -1330,27 +1333,30 @@ end function crystal_interaction_TwinBySlip
 !--------------------------------------------------------------------------------------------------
 !> @brief Schmid matrix for slip
 !> @details only active slip systems are considered
-! Non-schmid projections for cI with up to 6 coefficients
+! Non-Schmid projections for cI with up to 6 coefficients
 ! https://doi.org/10.1016/j.actamat.2012.03.053, eq. (17)
 ! https://doi.org/10.1016/j.actamat.2008.07.037, table 1
+! Non-Schmid projections for hcp with 1 coefficient
+! https://doi.org/10.1016/j.scriptamat.2019.11.002
 !--------------------------------------------------------------------------------------------------
 function crystal_SchmidMatrix_slip(Nslip,lattice,cOverA,nonSchmidCoefficients,sense) result(SchmidMatrix)
 
   integer,     dimension(:),              intent(in) :: Nslip                                       !< number of active slip systems per family
   character(len=*),                       intent(in) :: lattice                                     !< Bravais lattice (Pearson symbol)
   real(pREAL),                            intent(in) :: cOverA
-  real(pREAL), dimension(:,:), optional,  intent(in) :: nonSchmidCoefficients                       !< non-Schmid coefficients for projections
+  real(pREAL), dimension(:,:), optional,  intent(in) :: nonSchmidCoefficients                       !< non-Schmid coefficients for projections, shape(N_families,N_coeff)
   integer,                     optional,  intent(in) :: sense                                       !< sense (-1,+1)
   real(pREAL), dimension(3,3,sum(Nslip))             :: SchmidMatrix
 
   real(pREAL), dimension(3,3,sum(Nslip))             :: coordinateSystem
   real(pREAL), dimension(:,:),           allocatable :: slipSystems
   integer,     dimension(:),             allocatable :: NslipMax
-  integer,     dimension(:),             allocatable :: slipFamily
+  integer,     dimension(:),             allocatable :: family
   real(pREAL), dimension(3)                          :: direction, normal, np
   real(pREAL), dimension(6)                          :: coeff                                       !< local nonSchmid coefficient variable
   type(tRotation)                                    :: R
   integer                                            :: i
+
 
   select case(lattice)
     case('cF')
@@ -1370,15 +1376,31 @@ function crystal_SchmidMatrix_slip(Nslip,lattice,cOverA,nonSchmidCoefficients,se
       call IO_error(137,ext_msg='crystal_SchmidMatrix_slip: '//trim(lattice))
   end select
 
-  if (any(NslipMax(1:size(Nslip)) - Nslip < 0)) &
-    call IO_error(145,ext_msg='Nslip '//trim(lattice))
-  if (any(Nslip < 0)) &
-    call IO_error(144,ext_msg='Nslip '//trim(lattice))
+  if (present(nonSchmidCoefficients)) then
+    select case(lattice)
+      case('cI')
+        if (size(nonSchmidCoefficients,dim=2) > 6) &
+          call IO_error(132,'too many non-Schmid coefficients for cI (max=6)')
+      case('hP')
+        if (size(nonSchmidCoefficients,dim=2) > 1) &
+          call IO_error(132,'too many non-Schmid coefficients for hP (max=1)')
+      case default
+        if (size(nonSchmidCoefficients,dim=2) > 0) &
+          call IO_error(132,'non-Schmid coefficients not implemented for '//lattice)
+    end select
+  endif
 
-  slipFamily = math_expand([(i, i=1,size(Nslip))],Nslip)
+  if (any(NslipMax(1:size(Nslip)) - Nslip < 0)) &
+    call IO_error(145,'Nslip for '//trim(lattice), &
+                  'family',findloc(NslipMax(1:size(Nslip)) - Nslip < 0,.true.,dim=1))
+  if (any(Nslip < 0)) &
+    call IO_error(144,'Nslip for '//trim(lattice), &
+                  'family',findloc(Nslip < 0,.true.,dim=1))
+
+  family = math_expand([(i, i=1,size(Nslip))],Nslip)
   coordinateSystem = buildCoordinateSystem(Nslip,NslipMax,slipSystems,lattice,cOverA)
   if (present(sense)) then
-    if (abs(sense) /= 1) error stop 'neither +1 nor -1 sense in crystal_SchmidMatrix_slip'
+    if (abs(sense) /= 1) error stop 'crystal_SchmidMatrix_slip called with "sense" different from +1 or -1'
     coordinateSystem(1:3,1,1:sum(Nslip)) = coordinateSystem(1:3,1,1:sum(Nslip)) * real(sense,pREAL)
   end if
 
@@ -1390,23 +1412,36 @@ function crystal_SchmidMatrix_slip(Nslip,lattice,cOverA,nonSchmidCoefficients,se
     if (abs(math_trace33(SchmidMatrix(1:3,1:3,i))) > tol_math_check) &
       error stop 'dilatational Schmid matrix for slip'
 
-    if (present(nonSchmidCoefficients) .and. lattice == 'cI') then
+    if (present(nonSchmidCoefficients)) then
+      if (size(nonSchmidCoefficients,dim=2) == 0 .or. size(nonSchmidCoefficients,dim=1) < family(i)) cycle
+
       coeff(:) = 0.0_pREAL
-      family: select case(slipFamily(i))
-        case(1)
-          if (size(nonSchmidCoefficients,1) < 1) exit family
-          coeff(:size(nonSchmidCoefficients(1,:))) = nonSchmidCoefficients(1,:)
-          call R%fromAxisAngle([direction,60.0_pREAL],degrees=.true.,P=1)
-          np = R%rotate(normal)
-          SchmidMatrix(1:3,1:3,i) = SchmidMatrix(1:3,1:3,i) &
-                                  + coeff(1) * math_outer(direction, np) &
-                                  + coeff(2) * math_outer(math_cross(normal, direction), normal) &
-                                  + coeff(3) * math_outer(math_cross(np, direction), np) &
-                                  + coeff(4) * math_outer(normal, normal) &
-                                  + coeff(5) * math_outer(math_cross(normal, direction), &
-                                                          math_cross(normal, direction)) &
-                                  + coeff(6) * math_outer(direction, direction)
-      end select family
+
+      select case(lattice)
+
+        case ('cI')
+          if (family(i) == 1) then ! <111>{110} systems
+            coeff(:size(nonSchmidCoefficients,dim=2)) = nonSchmidCoefficients(family(i),:)
+            call R%fromAxisAngle([direction,60.0_pREAL],degrees=.true.,P=1)
+            np = R%rotate(normal)
+            SchmidMatrix(1:3,1:3,i) = SchmidMatrix(1:3,1:3,i) &
+                                    + coeff(1) * math_outer(direction, np) &
+                                    + coeff(2) * math_outer(math_cross(normal, direction), normal) &
+                                    + coeff(3) * math_outer(math_cross(np, direction), np) &
+                                    + coeff(4) * math_outer(normal, normal) &
+                                    + coeff(5) * math_outer(math_cross(normal, direction), &
+                                                            math_cross(normal, direction)) &
+                                    + coeff(6) * math_outer(direction, direction)
+          end if
+
+        case ('hP')
+          if (any(family(i) == [4,5])) then ! <11.3>{-10.1}/1st order pyramidal <c+a> and <11.3>{-1-1.2}/2nd order pyramidal <c+a>
+            coeff(:size(nonSchmidCoefficients,dim=2)) = nonSchmidCoefficients(family(i),:)
+            SchmidMatrix(1:3,1:3,i) = SchmidMatrix(1:3,1:3,i) &
+                                    + coeff(1) * math_outer(normal, normal)
+          end if
+
+      end select
     end if
   end do
 
@@ -1468,26 +1503,28 @@ end function crystal_SchmidMatrix_twin
 !> @brief Schmid matrix for transformation
 !> @details only active twin systems are considered
 !--------------------------------------------------------------------------------------------------
-function crystal_SchmidMatrix_trans(Ntrans,crystal_target,cOverA,a_cF,a_cI) result(SchmidMatrix)
+function crystal_SchmidMatrix_trans(Ntrans,lattice_target,cOverA,a_cF,a_cI) result(SchmidMatrix)
 
   integer,         dimension(:),             intent(in) :: Ntrans                                   !< number of active twin systems per family
-  character(len=*),                          intent(in) :: crystal_target                           !< Bravais lattice (Pearson symbol)
+  character(len=*),                          intent(in) :: lattice_target                           !< Bravais lattice (Pearson symbol)
   real(pREAL),                     optional, intent(in) :: cOverA, a_cI, a_cF
   real(pREAL),     dimension(3,3,sum(Ntrans))           :: SchmidMatrix
 
   real(pREAL), dimension(3,3,sum(Ntrans)) :: devNull
 
 
-  if (crystal_target == 'hP' .and. present(cOverA)) then
-    if (cOverA < 1.0_pREAL .or. cOverA > 2.0_pREAL) &
-    call IO_error(131,ext_msg='crystal_SchmidMatrix_trans: '//trim(crystal_target))
-    call buildTransformationSystem(devNull,SchmidMatrix,Ntrans,cOverA=cOverA)
-  else if (crystal_target == 'cI' .and. present(a_cF) .and. present(a_cI)) then
+  if (lattice_target == 'cI' .and. present(a_cF) .and. present(a_cI)) then
     if (a_cI <= 0.0_pREAL .or. a_cF <= 0.0_pREAL) &
-    call IO_error(134,ext_msg='crystal_SchmidMatrix_trans: '//trim(crystal_target))
+      call IO_error(130_pI16,'negative lattice parameter a', min(a_cI,a_cF), emph=[2])
     call buildTransformationSystem(devNull,SchmidMatrix,Ntrans,a_cF=a_cF,a_cI=a_cI)
+  elseif (lattice_target == 'hP' .and. present(cOverA)) then
+    if (cOverA < 1.0_pREAL .or. cOverA > 3.0_pREAL) &
+      call IO_error(130_pI16,'c/a for hP target lattice not in range [1,3]', cOverA, emph=[2])
+    call buildTransformationSystem(devNull,SchmidMatrix,Ntrans,cOverA=cOverA)
+  elseif (all(lattice_target /= ['cI','hP'])) then
+    call IO_error(130_pI16,'invalid target lattice',lattice_target,emph=[2])
   else
-    call IO_error(131,ext_msg='crystal_SchmidMatrix_trans: '//trim(crystal_target))
+    call IO_error(130_pI16,'lattice parameters for target lattice not given', lattice_target, emph=[2])
   end if
 
 end function crystal_SchmidMatrix_trans
@@ -1903,9 +1940,9 @@ function buildCoordinateSystem(active,potential,system,lattice,cOverA) result(co
     s                                                                                               !< index of my system in current family
 
   if (lattice == 'tI' .and. cOverA > 2.0_pREAL) &
-    call IO_error(131,ext_msg='buildCoordinateSystem:'//trim(lattice))
-  if (lattice == 'hP' .and. (cOverA < 1.0_pREAL .or. cOverA > 2.0_pREAL)) &
-    call IO_error(131,ext_msg='buildCoordinateSystem:'//trim(lattice))
+    call IO_error(130_pI16,'c/a for tI lattice larger than 2:', cOverA)
+  if (lattice == 'hP' .and. (cOverA < 1.0_pREAL .or. cOverA > 3.0_pREAL)) &
+    call IO_error(130_pI16,'c/a for hP lattice not in range [1,3]', cOverA)
 
   a = 0
   activeFamilies: do f = 1,size(active,1)
@@ -2131,7 +2168,7 @@ end function getlabels
 
 !--------------------------------------------------------------------------------------------------
 !> @brief Equivalent Poisson's ratio (ν).
-!> @details https://doi.org/10.1143/JPSJ.20.635
+!> @details https://doi.org/10.1088/0370-1298/65/5/307
 !--------------------------------------------------------------------------------------------------
 pure function crystal_isotropic_nu(C,assumption,lattice) result(nu)
 
@@ -2145,15 +2182,20 @@ pure function crystal_isotropic_nu(C,assumption,lattice) result(nu)
   real(pREAL), dimension(6,6)   :: S
 
 
-  if     (assumption == 'isostrain') then
-    K = sum(C(1:3,1:3)) / 9.0_pREAL
-  elseif (assumption == 'isostress') then
-    call math_invert(S,error,C)
-    if (error) error stop 'matrix inversion failed'
-    K = 1.0_pREAL / sum(S(1:3,1:3))
-  else
-    error stop 'invalid assumption'
-  end if
+  select case(misc_optional(lattice,''))
+    case('cF','cI')
+      K = (C(1,1) + C(1,2)*2.0_pREAL)/3.0_pREAL                                                     ! eq (9a)
+    case default
+      if     (assumption == 'isostrain') then
+        K = sum(C(1:3,1:3)) / 9.0_pREAL                                                             ! eq (6a)
+      elseif (assumption == 'isostress') then
+        call math_invert(S,error,C)
+        if (error) error stop 'matrix inversion failed'
+        K = 1.0_pREAL / sum(S(1:3,1:3))                                                             ! eq (7a)
+     else
+       error stop 'invalid assumption'
+     end if
+  end select
 
   mu = crystal_isotropic_mu(C,assumption,lattice)
   nu = (1.5_pREAL*K-mu)/(3.0_pREAL*K+mu)
@@ -2163,8 +2205,7 @@ end function crystal_isotropic_nu
 
 !--------------------------------------------------------------------------------------------------
 !> @brief Equivalent shear modulus (μ).
-!> @details https://doi.org/10.1143/JPSJ.20.635
-!> @details Nonlinear Mechanics of Crystals 10.1007/978-94-007-0350-6, pp 563
+!> @details https://doi.org/10.1088/0370-1298/65/5/307
 !--------------------------------------------------------------------------------------------------
 pure function crystal_isotropic_mu(C,assumption,lattice) result(mu)
 
@@ -2178,27 +2219,27 @@ pure function crystal_isotropic_mu(C,assumption,lattice) result(mu)
 
 
   if     (assumption == 'isostrain') then
-      select case(misc_optional(lattice,''))
-        case('cF','cI')
-          mu = ( C(1,1) - C(1,2) + C(4,4)*3.0_pREAL) / 5.0_pREAL
-        case default
-          mu = (  C(1,1)+C(2,2)+C(3,3) &
-                - C(1,2)-C(2,3)-C(1,3) &
-                +(C(4,4)+C(5,5)+C(6,6)) * 3.0_pREAL &
-               ) / 15.0_pREAL
-      end select
+    select case(misc_optional(lattice,''))
+      case('cF','cI')
+        mu = ( C(1,1) - C(1,2) + C(4,4)*3.0_pREAL) / 5.0_pREAL                                      ! eq (9b)
+      case default
+        mu = (  C(1,1)+C(2,2)+C(3,3) &
+              - C(1,2)-C(2,3)-C(1,3) &
+              +(C(4,4)+C(5,5)+C(6,6)) * 3.0_pREAL &
+             ) / 15.0_pREAL                                                                         ! eq (6b)
+    end select
 
   elseif (assumption == 'isostress') then
-      select case(misc_optional(lattice,''))
-        case('cF','cI')
-          mu = 5.0_pREAL &
-               / (4.0_pREAL/(C(1,1)-C(1,2)) + 3.0_pREAL/C(4,4))
-        case default
-          call math_invert(S,error,C)
-          if (error) error stop 'matrix inversion failed'
-          mu = 15.0_pREAL &
-              / (4.0_pREAL*(S(1,1)+S(2,2)+S(3,3)-S(1,2)-S(2,3)-S(1,3)) + 3.0_pREAL*(S(4,4)+S(5,5)+S(6,6)))
-      end select
+    select case(misc_optional(lattice,''))
+      case('cF','cI')
+        mu = 5.0_pREAL &
+           / (4.0_pREAL/(C(1,1)-C(1,2)) + 3.0_pREAL/C(4,4))                                         ! eq (9c), (8a), (8c)
+      case default
+        call math_invert(S,error,C)
+        if (error) error stop 'matrix inversion failed'
+        mu = 15.0_pREAL &
+           / (4.0_pREAL*(S(1,1)+S(2,2)+S(3,3)-S(1,2)-S(2,3)-S(1,3)) + 3.0_pREAL*(S(4,4)+S(5,5)+S(6,6))) ! eq (7b)
+    end select
   else
     error stop 'invalid assumption'
   end if

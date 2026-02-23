@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
 import copy
 import warnings
 from typing import Optional, Union, TypeVar, Literal, Sequence, NamedTuple, overload
@@ -192,7 +193,7 @@ class Orientation(Rotation,Crystal):
         other : Orientation
             Orientation to check for equality.
         """
-        return np.logical_not(self==other)
+        return np.logical_not(self==other) if isinstance(other, Orientation) else NotImplemented
 
 
     def isclose(self: MyType,
@@ -1199,7 +1200,7 @@ class Orientation(Rotation,Crystal):
         >>> import damask
         >>> a = damask.Orientation.from_Euler_angles(phi=[123,32,21],degrees=True,family='hexagonal')
         >>> b = damask.Orientation.from_Euler_angles(phi=[104,11,87],degrees=True,family='hexagonal')
-        >>> a.disorientation(b)
+        >>> a.disorientation(other=b)
         Crystal family: hexagonal
         array((0.976478  ,     0.18880082,  0.01784483,  0.10259889))
 
@@ -1210,7 +1211,7 @@ class Orientation(Rotation,Crystal):
         >>> N = 10000
         >>> a = damask.Orientation.from_random(shape=N,family='cubic')
         >>> b = damask.Orientation.from_random(shape=N,family='cubic')
-        >>> n,omega = a.disorientation(b).as_axis_angle(degrees=True,pair=True)
+        >>> n,omega = a.disorientation(other=b).as_axis_angle(degrees=True,pair=True)
         >>> plt.hist(omega,25)
         (...)
         >>> plt.show(block=False)
@@ -1507,7 +1508,7 @@ class Orientation(Rotation,Crystal):
 
         >>> import damask
         >>> o = damask.Orientation(family='cubic')
-        >>> o.IPF_color([0,0,1])
+        >>> o.IPF_color(vector=[0,0,1])
         array([1., 0., 0.])
 
         Sample standard triangle for hexagonal symmetry:
@@ -1516,8 +1517,8 @@ class Orientation(Rotation,Crystal):
         >>> from matplotlib import pyplot as plt
         >>> lab = [0,0,1]
         >>> o = damask.Orientation.from_random(shape=500000,family='hexagonal')
-        >>> coord = damask.util.project_equal_area(o.to_SST(lab))
-        >>> color = o.IPF_color(lab)
+        >>> coord = damask.util.project_equal_area(vector=o.to_SST(vector=lab))
+        >>> color = o.IPF_color(vector=lab)
         >>> plt.scatter(coord[:,0],coord[:,1],color=color,s=.06)
         <matplotlib.collections.PathCollection object at ...>
         >>> plt.axis('scaled')

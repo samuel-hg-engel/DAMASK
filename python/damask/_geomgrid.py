@@ -1,5 +1,7 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
 import os
 import copy
+import numbers
 import multiprocessing as mp
 from functools import partial
 from typing import Optional, Union, Sequence
@@ -17,14 +19,66 @@ from . import Rotation
 from . import Table
 from . import Colormap
 from ._typehints import FloatSequence, IntSequence, NumpyRngSeed
-try:
-    import numba as nb                                                                              # type: ignore[import-not-found]
-except ImportError:
-    nb = False
 
 
-def numba_njit_wrapper(**kwargs):
-    return (lambda function: nb.njit(function) if nb else function)
+class IcDict(dict):
+    """Dict that validates and broadcasts initial conditions on assignment."""
+
+    def __init__(self, cells: tuple[int, int, int]):
+        """
+        New initial condition dictionary.
+
+        Parameters
+        ----------
+        cells : tuple of int, len (3)
+            Cell counts along x,y,z direction.
+        """
+        super().__init__()
+        self.cells = cells
+
+    def __setitem__(self, k: str, v: Union[int, float, np.ndarray]):
+        """
+        Set a single initial condition key with validation and broadcasting.
+
+        Parameters
+        ----------
+        k : str
+            Name of the initial condition field.
+        v : int, float, or np.ndarray
+            Value to assign to the field. Allowed types and shapes:
+            - Scalars (`int` or `float`)
+              → broadcast to `cells`.
+            - Small arrays (`np.ndarray`) of shape (), (1,), or (3,)
+              → broadcast to `cells + value.shape`.
+            - Full-field arrays (`np.ndarray`) with leading dimensions matching `cells` and trailing shape (), (1,), or (3,)
+              → copied as-is.
+
+        Raises
+        ------
+        ValueError
+            If `v` has an invalid shape that does not match the allowed rules.
+
+        Notes
+        -----
+        Broadcasting ensures that all initial condition fields conform to the
+        grid defined by `cells`.
+        This method is called both for full-property assignment (via the parent setter)
+        and per-key assignment (`GeomGrid.initial_conditions[key] = value`), so all
+        validation and broadcasting logic is centralized here.
+        """
+        if not (    isinstance(v, numbers.Real)
+                or (isinstance(v, np.ndarray) and v.shape in [(), (1,), (3,)])
+                or (isinstance(v, np.ndarray) and len(v.shape) >= 3 and
+                    v.shape[:3] == self.cells and v.shape[3:] in [(), (1,), (3,)])
+               ):
+            raise ValueError(f'initial condition "{k}" must be [a field of] scalars or three-dimensional vectors')
+
+        super().__setitem__(k,
+                            v if isinstance(v, np.ndarray) and len(v.shape) >= 3 and v.shape[:3] == self.cells else
+                            np.broadcast_to(v, self.cells + v.shape) if isinstance(v, np.ndarray) else
+                            np.broadcast_to(v, self.cells)
+                            )
+
 
 class GeomGrid:
     """
@@ -56,12 +110,15 @@ class GeomGrid:
             Coordinates of grid origin in meter. Defaults to [0.0,0.0,0.0].
         initial_conditions : dictionary, optional
             Initial condition label and field values at each grid point.
+            If leading shape deviates from material shape,
+            the (constant) value is broadcast across the grid.
         comments : (sequence of) str, optional
             Additional, human-readable information, e.g. history of operations.
         """
         self.material = material
-        self.size = size                                                                            # type: ignore[assignment]
-        self.origin = origin                                                                        # type: ignore[assignment]
+        self.size = size
+        self.origin = origin
+        self._ic = IcDict(tuple(self.cells))
         self.initial_conditions = {} if initial_conditions is None else initial_conditions
         self.comments = [] if comments is None else \
                         [comments] if isinstance(comments,str) else \
@@ -82,7 +139,8 @@ class GeomGrid:
                f'origin: {util.srepr(self.origin,"   ")} m',
                f'# materials: {mat_N}' + ('' if mat_min == 0 and mat_max == mat_N-1 else
                                           f' (min: {mat_min}, max: {mat_max})')
-               ]+(['initial_conditions:']+[f'  - {f}' for f in self.initial_conditions] if self.initial_conditions else []))
+               ]+(['initial_conditions:']+[f'  - {f}'+(f' {data.shape[3:]}' if len(data.shape)>3 else '')
+                                           for f,data in self.initial_conditions.items()] if self.initial_conditions else []))
 
 
     def __copy__(self) -> 'GeomGrid':
@@ -115,10 +173,38 @@ class GeomGrid:
         """
         if not isinstance(other, GeomGrid):
             return NotImplemented
+        return self.match(other) and bool(    other.initial_conditions.keys() == self.initial_conditions.keys()
+                                          and all(np.allclose(other.initial_conditions[k], self.initial_conditions[k])
+                                                  for k in self.initial_conditions)
+                                         )
+
+
+    def match(self,
+              other: object) -> bool:
+        """
+        Test geometric equality of other, i.e., ignoring initial conditions.
+
+        Parameters
+        ----------
+        other : damask.GeomGrid
+            GeomGrid to compare self against.
+
+        Returns
+        -------
+        match : bool
+            Whether both arguments are geometrically equal.
+
+        Notes
+        -----
+        This comparison does not consider initial conditions.
+        """
+        if not isinstance(other, GeomGrid):
+            return NotImplemented
         return bool(    np.allclose(other.size,self.size)
                     and np.allclose(other.origin,self.origin)
                     and np.all(other.cells == self.cells)
-                    and np.all(other.material == self.material))
+                    and np.all(other.material == self.material)
+                   )
 
 
     @property
@@ -149,7 +235,7 @@ class GeomGrid:
     @size.setter
     def size(self,
              size: FloatSequence):
-        if len(size) != 3 or any(np.array(size) < 0):
+        if len(size) != 3 or any(np.asarray(size) < 0):
             raise ValueError(f'invalid size {size}')
 
         self._size = np.array(size,np.float64)
@@ -167,21 +253,22 @@ class GeomGrid:
 
         self._origin = np.array(origin,np.float64)
 
+
     @property
-    def initial_conditions(self) -> dict[str,np.ndarray]:
+    def initial_conditions(self) -> dict[str, np.ndarray]:
         """Fields of initial conditions."""
-        self._ic = dict(zip(self._ic.keys(),                                                        # type: ignore[has-type]
-                        [v if isinstance(v,np.ndarray) else
-                         np.broadcast_to(v,self.cells) for v in self._ic.values()]))                # type: ignore[has-type]
         return self._ic
 
     @initial_conditions.setter
-    def initial_conditions(self,
-                           ic: dict[str,np.ndarray]):
-        if not isinstance(ic,dict):
-            raise TypeError('initial conditions is not a dictionary')
+    def initial_conditions(self, ic: dict[str, np.ndarray]):
+        """Set initial conditions, broadcasting to the cell grid shape if necessary."""
+        if not isinstance(ic, dict):
+            raise TypeError('initial conditions must be a dictionary')
 
-        self._ic = ic
+        self._ic.clear()
+        for k, v in ic.items():
+            self._ic[k] = v
+
 
     @property
     def cells(self) -> np.ndarray:
@@ -214,9 +301,9 @@ class GeomGrid:
             Grid-based geometry from file.
         """
         v = VTK.load(fname if str(fname).endswith('.vti') else str(fname)+'.vti')
-        cells = np.array(v.vtk_data.GetDimensions())-1                                              # type: ignore[attr-defined]
+        cells = tuple(np.array(v.vtk_data.GetDimensions())-1)                                       # type: ignore[attr-defined]
         bbox  = np.array(v.vtk_data.GetBounds()).reshape(3,2).T
-        ic = {l:v.get(l).reshape(cells,order='F') for l in set(v.labels['Cell Data']) - {label}}
+        ic = {l:v.get(l).reshape(cells+v.get(l).shape[1:],order='F') for l in set(v.labels['Cell Data']) - {label}}
 
         return GeomGrid(material = v.get(label).reshape(cells,order='F'),
                         size     = bbox[1] - bbox[0],
@@ -295,9 +382,9 @@ class GeomGrid:
         >>> import damask
         >>> N_grains = 20
         >>> cells = (32,32,32)
-        >>> damask.util.run(f'neper -T -n {N_grains} -tesrsize {cells[0]}:{cells[1]}:{cells[2]} -periodicity all -format vtk')
+        >>> damask.util.run(cmd=f'neper -T -n {N_grains} -tesrsize {cells[0]}:{cells[1]}:{cells[2]} -periodicity all -format vtk')
         stdioTuple(stdout=...
-        >>> damask.GeomGrid.load_Neper(f'n{N_grains}-id1.vtk').renumber()
+        >>> damask.GeomGrid.load_Neper(fname=f'n{N_grains}-id1.vtk').renumber()
         cells:  32 × 32 × 32
         size:   1.0 × 1.0 × 1.0 m³
         origin: 0.0   0.0   0.0 m
@@ -373,8 +460,12 @@ class GeomGrid:
         argument is used for this function, the correct material configuration
         is only obtained if the "grain_data" argument is used when calling
         damask.ConfigMaterial.load_DREAM3D.
+
+        Versions 8.0 and later of the DREAM.3D file format are not yet supported.
         """
         with h5py.File(fname, 'r') as f:
+            if (file_version := util.version(f.attrs['FileVersion'].decode()+'.0')) > '7.0.0':
+                raise ValueError(f'DREAM.3D file format {file_version} is not supported')
             b = util.DREAM3D_base_group(f) if base_group is None else base_group
             c = util.DREAM3D_cell_data_group(f) if cell_data is None else cell_data
 
@@ -401,7 +492,8 @@ class GeomGrid:
     @staticmethod
     def from_table(table: Table,
                    coordinates: str,
-                   labels: Union[str, Sequence[str]]) -> 'GeomGrid':
+                   labels: Union[str, Sequence[str]],
+                   atol: float = 0.0) -> 'GeomGrid':
         """
         Create grid from ASCII table.
 
@@ -415,21 +507,20 @@ class GeomGrid:
         labels : (sequence of) str
             Label(s) of the columns containing the material definition.
             Each unique combination of values results in one material ID.
+        atol : float, optional
+            Absolute tolerance to consider grid coordinates equivalent.
+            Defaults to 0.0.
 
         Returns
         -------
         new : damask.GeomGrid
             Grid-based geometry from values in table.
         """
-        cells,size,origin = grid_filters.cellsSizeOrigin_coordinates0_point(table.get(coordinates))
+        cells,size,origin = grid_filters.cellsSizeOrigin_coordinates0_point(table.get(coordinates),atol=atol)
 
-        labels_ = [labels] if isinstance(labels,str) else labels
-        unique,unique_inverse = np.unique(np.hstack([table.get(l) for l in labels_]),return_inverse=True,axis=0)
+        unique,inverse = table[labels].unique(return_inverse=True)
 
-        ma = np.arange(cells.prod()) if len(unique) == cells.prod() else \
-             np.arange(unique.size)[np.argsort(pd.unique(unique_inverse.squeeze()))][unique_inverse]
-
-        return GeomGrid(material = ma.reshape(cells,order='F'),
+        return GeomGrid(material = np.arange(len(unique))[inverse].reshape(cells,order='F'),
                         size     = size,
                         origin   = origin,
                         comments = util.execution_stamp('GeomGrid','from_table'),
@@ -670,7 +761,8 @@ class GeomGrid:
 
         >>> import numpy as np
         >>> import damask
-        >>> damask.GeomGrid.from_minimal_surface([64]*3,np.ones(3)*1.e-4,'Gyroid')
+        >>> damask.GeomGrid.from_minimal_surface(cells=[64]*3,size=np.ones(3)*1.e-4,
+        ...                                      surface='Gyroid')
         cells:  64 × 64 × 64
         size:   0.0001 × 0.0001 × 0.0001 m³
         origin: 0.0   0.0   0.0 m
@@ -680,8 +772,8 @@ class GeomGrid:
 
         >>> import numpy as np
         >>> import damask
-        >>> damask.GeomGrid.from_minimal_surface([80]*3,np.ones(3)*5.e-4,
-        ...                                  'Neovius',materials=(1,5))
+        >>> damask.GeomGrid.from_minimal_surface(cells=[80]*3,size=np.ones(3)*5.e-4,
+        ...                                      surface='Neovius',materials=(1,5))
         cells:  80 × 80 × 80
         size:   0.0005 × 0.0005 × 0.0005 m³
         origin: 0.0   0.0   0.0 m
@@ -714,7 +806,7 @@ class GeomGrid:
         v = VTK.from_image_data(self.cells,self.size,self.origin)\
                .set('material',self.material.flatten(order='F'))
         for label,data in self.initial_conditions.items():
-            v = v.set(label,data.flatten(order='F'))
+            v = v.set(label,data.reshape((-1,)+data.shape[3:],order='F'))
         v.comments = self.comments
 
         v.save(fname,parallel=False,compress=compress)
@@ -759,14 +851,19 @@ class GeomGrid:
         updated : damask.GeomGrid
             Updated grid-based geometry.
 
+        Notes
+        -----
+        Existing initial condition fields will be removed.
+
         Examples
         --------
         Remove lower 1/2 of the microstructure in z-direction.
 
         >>> import numpy as np
         >>> import damask
-        >>> g = damask.GeomGrid(np.zeros([32]*3,int),np.ones(3)*1e-3)
-        >>> g.canvas([32,32,16],[0,0,16])
+        >>> g = damask.GeomGrid(material=np.zeros([32]*3,int),
+        ...                     size=np.ones(3)*1e-3)
+        >>> g.canvas(cells=[32,32,16],offset=[0,0,16])
         cells:  32 × 32 × 16
         size:   0.001 × 0.001 × 0.0005 m³
         origin: 0.0   0.0   0.0005 m
@@ -815,12 +912,13 @@ class GeomGrid:
 
         >>> import numpy as np
         >>> import damask
-        >>> (g := damask.GeomGrid(np.arange(4*5*6).reshape([4,5,6]),np.ones(3)))
+        >>> (g := damask.GeomGrid(material=np.arange(4*5*6).reshape([4,5,6]),
+        ...                       size=np.ones(3)))
         cells:  4 × 5 × 6
         size:   1.0 × 1.0 × 1.0 m³
         origin: 0.0   0.0   0.0 m
         # materials: 120
-        >>> g.mirror('y')
+        >>> g.mirror(directions='y')
         cells:  4 × 8 × 6
         size:   1.0 × 1.6 × 1.0 m³
         origin: 0.0   0.0   0.0 m
@@ -828,7 +926,7 @@ class GeomGrid:
 
         Reflect along x- and y-direction.
 
-        >>> g.mirror('xy',reflect=True)
+        >>> g.mirror(directions='xy',reflect=True)
         cells:  8 × 10 × 6
         size:   2.0 × 2.0 × 1.0 m³
         origin: 0.0   0.0   0.0 m
@@ -836,25 +934,32 @@ class GeomGrid:
 
         Independence of mirroring order.
 
-        >>> g.mirror('xy') == g.mirror(['y','x'])
+        >>> g.mirror(directions='xy') == g.mirror(directions=['y','x'])
         True
         """
-        if not set(directions).issubset(valid := ['x', 'y', 'z']):
+        valid = 'xyz'
+        if not set(directions).issubset(valid):
             raise ValueError(f'invalid direction "{set(directions).difference(valid)}" specified')
 
         limits: Sequence[Optional[int]] = [None,None] if reflect else [-2,0]
+        selection = (slice(limits[0],limits[1],-1),slice(None),slice(None))
         mat = self.material.copy()
+        ic = self.initial_conditions.copy()
 
-        if 'x' in directions:
-            mat = np.concatenate([mat,mat[limits[0]:limits[1]:-1,:,:]],0)
-        if 'y' in directions:
-            mat = np.concatenate([mat,mat[:,limits[0]:limits[1]:-1,:]],1)
-        if 'z' in directions:
-            mat = np.concatenate([mat,mat[:,:,limits[0]:limits[1]:-1]],2)
+        for i,d in enumerate(valid):
+            if d in directions:
+                mat = np.concatenate([mat,
+                                      mat[selection[0-i],selection[1-i],selection[2-i]]],
+                                      axis=i)
+                for label in ic:
+                    ic[label] = np.concatenate([ic[label],
+                                                ic[label][selection[0-i],selection[1-i],selection[2-i]]],
+                                                axis=i)
 
         return GeomGrid(material = mat,
                         size     = self.size/self.cells*np.asarray(mat.shape),
                         origin   = self.origin,
+                        initial_conditions = ic,
                         comments = self.comments+[util.execution_stamp('GeomGrid','mirror')],
                        )
 
@@ -880,7 +985,8 @@ class GeomGrid:
 
         >>> import numpy as np
         >>> import damask
-        >>> (g := damask.GeomGrid(np.arange(4*5*6).reshape([4,5,6]),np.ones(3)))
+        >>> (g := damask.GeomGrid(material=np.arange(4*5*6).reshape([4,5,6]),
+        ...                       size=np.ones(3)))
         cells:  4 × 5 × 6
         size:   1.0 × 1.0 × 1.0 m³
         origin: 0.0   0.0   0.0 m
@@ -893,14 +999,18 @@ class GeomGrid:
         >>> g.mirror('x',reflect=True) == g.mirror('x',reflect=True).flip('x')
         True
         """
-        if not set(directions).issubset(valid := ['x', 'y', 'z']):
+        valid = 'xyz'
+        if not set(directions).issubset(valid):
             raise ValueError(f'invalid direction "{set(directions).difference(valid)}" specified')
 
         mat = np.flip(self.material, [valid.index(d) for d in directions if d in valid])
-
+        ic = {}
+        for label in self.initial_conditions:
+            ic[label] = np.flip(self.initial_conditions[label],[valid.index(d) for d in directions if d in valid])
         return GeomGrid(material = mat,
                         size     = self.size,
                         origin   = self.origin,
+                        initial_conditions = ic,
                         comments = self.comments+[util.execution_stamp('GeomGrid','flip')],
                        )
 
@@ -924,18 +1034,23 @@ class GeomGrid:
         updated : damask.GeomGrid
             Updated grid-based geometry.
 
+        Notes
+        -----
+        Existing initial condition fields will be removed.
+
         Examples
         --------
         Rotation by 180° (π) is equivalent to twice flipping.
 
         >>> import numpy as np
         >>> import damask
-        >>> (g := damask.GeomGrid(np.arange(4*5*6).reshape([4,5,6]),np.ones(3)))
+        >>> (g := damask.GeomGrid(material=np.arange(4*5*6).reshape([4,5,6]),
+        ...                       size=np.ones(3)))
         cells:  4 × 5 × 6
         size:   1.0 × 1.0 × 1.0 m³
         origin: 0.0   0.0   0.0 m
         # materials: 120
-        >>> g.rotate(damask.Rotation.from_axis_angle([0,0,1,180],degrees=True)) == g.flip('xy')
+        >>> g.rotate(R=damask.Rotation.from_axis_angle(n_omega=[0,0,1,180],degrees=True)) == g.flip(directions='xy')
         True
         """
         material = self.material
@@ -979,12 +1094,13 @@ class GeomGrid:
 
         >>> import numpy as np
         >>> import damask
-        >>> (g := damask.GeomGrid(np.zeros([32]*3,int),np.ones(3)*1e-4))
+        >>> (g := damask.GeomGrid(material=np.zeros([32]*3,int),
+        ...                       size=np.ones(3)*1e-4))
         cells:  32 × 32 × 32
         size:   0.0001 × 0.0001 × 0.0001 m³
         origin: 0.0   0.0   0.0 m
         # materials: 1
-        >>> g.scale(g.cells*2)
+        >>> g.scale(cells=g.cells*2)
         cells:  64 × 64 × 64
         size:   0.0001 × 0.0001 × 0.0001 m³
         origin: 0.0   0.0   0.0 m
@@ -1023,7 +1139,8 @@ class GeomGrid:
         """
         cells = idx.shape[:3]
         flat = (idx if len(idx.shape)==3 else grid_filters.ravel_index(idx)).flatten(order='F')
-        ic = {k: v.flatten(order='F')[flat].reshape(cells,order='F') for k,v in self.initial_conditions.items()}
+        ic = {k: v.reshape((-1,)+v.shape[3:],order='F')[flat]
+                  .reshape(cells+v.shape[3:],order='F') for k,v in self.initial_conditions.items()}
 
         return GeomGrid(material = self.material.flatten(order='F')[flat].reshape(cells,order='F'),
                         size     = self.size,
@@ -1071,8 +1188,9 @@ class GeomGrid:
             Updated grid-based geometry.
         """
         material = self.material.copy()
-        for f,t in zip(from_material if isinstance(from_material,(Sequence,np.ndarray)) else [from_material],
-                       to_material if isinstance(to_material,(Sequence,np.ndarray)) else [to_material]): # ToDo Python 3.10 has strict mode for zip
+        f_material = from_material if isinstance(from_material,(Sequence,np.ndarray)) else [from_material]
+        t_material = to_material if isinstance(to_material,(Sequence,np.ndarray)) else [to_material]*len(f_material)
+        for f,t in zip(f_material,t_material,strict=True):
             material[self.material==f] = t
 
         return GeomGrid(material = material,
@@ -1226,8 +1344,11 @@ class GeomGrid:
 
         >>> import numpy as np
         >>> import damask
-        >>> g = damask.GeomGrid(np.zeros([64]*3,int), np.ones(3)*1e-4)
-        >>> g.add_primitive(np.ones(3)*5e-5,np.ones(3)*5e-5,1)
+        >>> g = damask.GeomGrid(material=np.zeros([64]*3,int),
+        ...                     size=np.ones(3)*1e-4)
+        >>> g.add_primitive(dimension=np.ones(3)*5e-5,
+        ...                 center=np.ones(3)*5e-5,
+        ...                 exponent=1)
         cells:  64 × 64 × 64
         size:   0.0001 × 0.0001 × 0.0001 m³
         origin: 0.0   0.0   0.0 m
@@ -1237,8 +1358,11 @@ class GeomGrid:
 
         >>> import numpy as np
         >>> import damask
-        >>> g = damask.GeomGrid(np.zeros([64]*3,int), np.ones(3)*1e-4)
-        >>> g.add_primitive(np.ones(3,int)*32,np.zeros(3),np.inf)
+        >>> g = damask.GeomGrid(material=np.zeros([64]*3,int),
+        ...                     size=np.ones(3)*1e-4)
+        >>> g.add_primitive(dimension=np.ones(3,int)*32,
+        ...                 center=np.zeros(3),
+        ...                 exponent=np.inf)
         cells:  64 × 64 × 64
         size:   0.0001 × 0.0001 × 0.0001 m³
         origin: 0.0   0.0   0.0 m
@@ -1306,7 +1430,7 @@ class GeomGrid:
         updated : damask.GeomGrid
             Updated grid-based geometry.
         """
-        @numba_njit_wrapper()
+        @util.numba_njit_wrapper()
         def tainted_neighborhood(stencil: np.ndarray,
                                  selection: Optional[np.ndarray] = None):
             me = stencil[stencil.size//2]
@@ -1361,7 +1485,8 @@ class GeomGrid:
         grain_boundaries : damask.VTK
             VTK-based geometry of grain boundary network.
         """
-        if not set(directions).issubset(valid := ['x', 'y', 'z']):
+        valid = 'xyz'
+        if not set(directions).issubset(valid):
             raise ValueError(f'invalid direction "{set(directions).difference(valid)}" specified')
 
         o = [[0, self.cells[0]+1,           np.prod(self.cells[:2]+1)+self.cells[0]+1, np.prod(self.cells[:2]+1)],
@@ -1369,7 +1494,7 @@ class GeomGrid:
              [0, 1,                         self.cells[0]+1+1,                         self.cells[0]+1]] # offset for connectivity
 
         connectivity = []
-        for i,d in enumerate(['x','y','z']):
+        for i,d in enumerate(valid):
             if d not in directions: continue
             mask = self.material != np.roll(self.material,1,i)
             for j in [0,1,2]:
@@ -1378,8 +1503,8 @@ class GeomGrid:
             if i == 1 and not periodic: mask[:,0,:] = mask[:,-1,:] = False
             if i == 2 and not periodic: mask[:,:,0] = mask[:,:,-1] = False
 
-            base_nodes = np.argwhere(mask.flatten(order='F')).reshape(-1,1)
+            base_nodes = np.argwhere(mask.flatten(order='F')).reshape((-1,1))
             connectivity.append(np.block([base_nodes + o[i][k] for k in range(4)]))
 
-        coords = grid_filters.coordinates0_node(self.cells,self.size,self.origin).reshape(-1,3,order='F')
-        return VTK.from_unstructured_grid(coords,np.vstack(connectivity),'QUAD')
+        coords = grid_filters.coordinates0_node(self.cells,self.size,self.origin).reshape((-1,3),order='F')
+        return VTK.from_unstructured_grid(coords,np.vstack(connectivity),'QUADRILATERAL')

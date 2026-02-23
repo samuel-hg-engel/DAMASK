@@ -1,3 +1,4 @@
+! SPDX-License-Identifier: AGPL-3.0-or-later
 !--------------------------------------------------------------------------------------------------
 !> @author Franz Roters, Max-Planck-Institut für Eisenforschung GmbH
 !> @author Philip Eisenlohr, Max-Planck-Institut für Eisenforschung GmbH
@@ -63,16 +64,14 @@ module phase
     DAMAGE_ISOBRITTLE, &
     DAMAGE_ANISOBRITTLE, &
     THERMAL_SOURCE_DISSIPATION, &
-    THERMAL_SOURCE_EXTERNALHEAT
+    THERMAL_SOURCE_EXTERNALHEAT, &
+    CHEMICAL_QUADENERGY
   end enum
 
 
   integer(kind(UNDEFINED)), dimension(:), allocatable :: &
     mechanical_plasticity_type, &                                                                   !< plasticity of each phase
     damage_type                                                                                     !< damage type of each phase
-  integer(kind(UNDEFINED)),  dimension(:,:), allocatable :: &
-    thermal_source_type, &
-    mechanical_eigen_kinematics_type
 
   character(len=2), allocatable, dimension(:) :: phase_lattice
   real(pREAL),      allocatable, dimension(:) :: phase_cOverA
@@ -124,6 +123,9 @@ module phase
       type(tDict), pointer :: phases
     end subroutine thermal_init
 
+    module subroutine chemical_init(phases)
+      type(tDict), pointer :: phases
+    end subroutine chemical_init
 
     module subroutine mechanical_result(group,ph)
       character(len=*), intent(in) :: group
@@ -140,6 +142,11 @@ module phase
       integer,          intent(in) :: ph
     end subroutine thermal_result
 
+    module subroutine chemical_result(group,ph)
+      character(len=*), intent(in) :: group
+      integer,          intent(in) :: ph
+    end subroutine chemical_result
+
     module subroutine mechanical_forward()
     end subroutine mechanical_forward
 
@@ -148,6 +155,9 @@ module phase
 
     module subroutine thermal_forward()
     end subroutine thermal_forward
+
+    module subroutine chemical_forward()
+    end subroutine chemical_forward
 
 
     module subroutine mechanical_restore(ce,includeL)
@@ -342,6 +352,23 @@ module phase
         dL_i_dM_i                                                                                   !< derivative of L_i with respect to M_i
     end subroutine damage_anisobrittle_LiAndItsTangent
 
+    module function phase_calculate_composition(mu,co,ce) result(conc)
+      real(pREAL), intent(in), dimension(:) :: mu
+      integer, intent(in) :: co, ce
+      real(pREAL), dimension(:), allocatable :: conc
+    end function phase_calculate_composition
+
+    module function phase_get_mobility(co,ce) result(mobility)
+      integer, intent(in) :: co, ce
+      real(pREAL), dimension(:,:),allocatable :: mobility
+    end function phase_get_mobility
+
+    module function phase_compositionTangent(mu,co,ce) result(comp_tangent)
+      real(pREAL), dimension(:), intent(in) :: mu
+      integer, intent(in) :: co, ce
+      real(pREAL), dimension(:,:),allocatable :: comp_tangent
+    end function phase_compositionTangent
+
   end interface
 
   public :: &
@@ -370,7 +397,10 @@ module phase
     phase_set_phi, &
     phase_P, &
     phase_set_F, &
-    phase_F
+    phase_F, &
+    phase_calculate_composition, &
+    phase_get_mobility, &
+    phase_compositionTangent
 
 contains
 
@@ -392,12 +422,12 @@ subroutine phase_init()
   print'(/,1x,a)', '<<<+-  phase init  -+>>>'; flush(IO_STDOUT)
 
   phases => config_material%get_dict('phase')
-  allocate(phase_lattice(phases%length))
-  allocate(phase_cOverA(phases%length),source=-1.0_pREAL)
-  allocate(phase_rho(phases%length))
-  allocate(phase_O_0(phases%length))
+  allocate(phase_lattice(size(phases)))
+  allocate(phase_cOverA(size(phases)),source=-1.0_pREAL)
+  allocate(phase_rho(size(phases)))
+  allocate(phase_O_0(size(phases)))
 
-  do ph = 1,phases%length
+  do ph = 1,size(phases)
     print'(/,1x,a,i0,a)', 'phase ',ph,': '//phases%key(ph)
     phase => phases%get_dict(ph)
     refs = config_listReferences(phase,indent=3)
@@ -405,7 +435,7 @@ subroutine phase_init()
     phase_rho(ph) = phase%get_asReal('rho',defaultVal=0.0_pREAL)
     phase_lattice(ph) = phase%get_asStr('lattice')
     if (all(phase_lattice(ph) /= ['cF','cI','hP','tI'])) &
-      call IO_error(130,ext_msg='phase_init: '//phase%get_asStr('lattice'))
+      call IO_error(130_pI16,'invalid lattice', phase_lattice(ph), emph=[2])
     if (any(phase_lattice(ph) == ['hP','tI'])) &
       phase_cOverA(ph) = phase%get_asReal('c/a')
     allocate(phase_O_0(ph)%data(count(material_ID_phase==ph)))
@@ -419,8 +449,8 @@ subroutine phase_init()
     end do
   end do
 
-  allocate(phase_O(phases%length))
-  do ph = 1,phases%length
+  allocate(phase_O(size(phases)))
+  do ph = 1,size(phases)
     phase_O(ph)%data = phase_O_0(ph)%data
   end do
 
@@ -430,6 +460,7 @@ subroutine phase_init()
   call mechanical_init(phases,num_mech)
   call damage_init()
   call thermal_init(phases)
+  call chemical_init(phases)
 
   call crystallite_init()
 
@@ -497,6 +528,7 @@ subroutine phase_forward()
   call mechanical_forward()
   call damage_forward()
   call thermal_forward()
+  call chemical_forward()
 
 end subroutine phase_forward
 
@@ -522,6 +554,7 @@ subroutine phase_result()
     call mechanical_result(group,ph)
     call damage_result(group,ph)
     call thermal_result(group,ph)
+    call chemical_result(group,ph)
 
   end do
 

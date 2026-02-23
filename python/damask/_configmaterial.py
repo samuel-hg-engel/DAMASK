@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
 from typing import Optional, Union, Sequence, Any
 
 import numpy as np
@@ -124,8 +125,12 @@ class ConfigMaterial(YAML):
 
         Homogenization and phase entries are emtpy and need to be
         defined separately.
+
+        Versions 8.0 and later of the DREAM.3D file format are not yet supported.
         """
         with h5py.File(fname, 'r') as f:
+            if (file_version := util.version(f.attrs['FileVersion'].decode()+'.0')) > '7.0.0':
+                raise ValueError(f'DREAM.3D file format {file_version} is not supported')
             b = util.DREAM3D_base_group(f) if base_group is None else base_group
             c = util.DREAM3D_cell_data_group(f) if cell_data is None else cell_data
 
@@ -197,7 +202,7 @@ class ConfigMaterial(YAML):
         --------
         >>> import damask
         >>> from damask import ConfigMaterial as cm
-        >>> t = damask.Table.load('small.txt')
+        >>> t = damask.Table.load(fname='small.txt')
         >>> t
             3:pos  pos  pos  4:qu   qu   qu   qu     phase homog
          0      0    0    0   1.0  0.0  0.0  0.0  Aluminum    SX
@@ -234,16 +239,13 @@ class ConfigMaterial(YAML):
             v: 1.0
           homogenization: single_crystal
         """
-        kwargs = {}
-        for arg,val in zip(['homogenization','phase','v','O','V_e'],[homogenization,phase,v,O,V_e]):
-            if val is not None:
-                kwargs[arg] = table.get(val) if val in table.labels else np.atleast_2d([val]*len(table)).T # type: ignore[arg-type]
+        tbl = Table()
+        for k,v in filter(lambda kv: kv[1] is not None, zip(['homogenization','phase','v','O','V_e'], # type: ignore [assignment]
+                                                            [ homogenization,  phase,  v,  O,  V_e ])):
+            tbl = tbl.set(k, table.get(v) if v in table.labels else np.atleast_2d([v]*len(table)).T)  # type: ignore [arg-type]
+        tbl = tbl.unique()
 
-        _,idx = np.unique(np.hstack(list(kwargs.values())),return_index=True,axis=0)
-        idx = np.sort(idx)
-        kwargs = {k:np.atleast_1d(v[idx].squeeze()) for k,v in kwargs.items()}
-
-        return ConfigMaterial().material_add(**kwargs)
+        return ConfigMaterial().material_add(**dict(zip(tbl.labels, [tbl.get(l) for l in tbl.labels])))
 
 
     @property
@@ -331,7 +333,8 @@ class ConfigMaterial(YAML):
             for k,v in self['phase'].items():
                 if v is not None and 'lattice' in v:
                     try:
-                        Orientation(lattice=v['lattice'])
+                        Orientation(lattice=v['lattice'],
+                                    c=v.get('c/a',None))
                     except KeyError:
                         logger.warning(f"Invalid lattice '{v['lattice']}' in phase '{k}'")
                         ok = False
@@ -456,7 +459,7 @@ class ConfigMaterial(YAML):
         >>> import damask
         >>> m = damask.ConfigMaterial()
         >>> m = m.material_add(phase = ['Ferrite','Martensite','Ferrite'],
-        ...                    O = damask.Rotation.from_random(3,rng_seed=20191102),
+        ...                    O = damask.Rotation.from_random(shape=3,rng_seed=20191102),
         ...                    homogenization = 'SX')
         >>> m
         homogenization: {SX: null}
@@ -486,7 +489,7 @@ class ConfigMaterial(YAML):
         >>> m = damask.ConfigMaterial()
         >>> N_materials = 5
         >>> m = m.material_add(phase = np.array([['Austenite']*3+['Ferrite']]),
-        ...                    O = damask.Rotation.from_random((N_materials,4),rng_seed=20191102),
+        ...                    O = damask.Rotation.from_random(shape=(N_materials,4),rng_seed=20191102),
         ...                    v = np.array([[0.2]*3+[0.4]]),
         ...                    homogenization = 'Taylor')
         >>> m
@@ -591,7 +594,7 @@ class ConfigMaterial(YAML):
                     if np.min(total) < 0 or np.max(total) > 1:
                         raise ValueError('volume fraction "v" out of range')
             if k == 'O' and not np.allclose(1.0,np.linalg.norm(broadcasted,axis=-1)):
-                raise ValueError('orientation "O" is not a unit quaterion')
+                raise ValueError('orientation "O" is not a unit quaternion')
             elif k == 'V_e' and not np.allclose(broadcasted,tensor.symmetric(broadcasted)):
                 raise ValueError('elastic stretch "V_e" is not symmetric')
             for i in range(N_materials):

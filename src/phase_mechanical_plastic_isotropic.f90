@@ -1,3 +1,4 @@
+! SPDX-License-Identifier: AGPL-3.0-or-later
 !--------------------------------------------------------------------------------------------------
 !> @author Franz Roters, Max-Planck-Institut für Eisenforschung GmbH
 !> @author Philip Eisenlohr, Max-Planck-Institut für Eisenforschung GmbH
@@ -75,11 +76,11 @@ module function plastic_isotropic_init() result(myPlasticity)
   print'(/,1x,a,1x,i0)', '# phases:',count(myPlasticity); flush(IO_STDOUT)
 
   phases => config_material%get_dict('phase')
-  allocate(param(phases%length))
-  allocate(state(phases%length))
+  allocate(param(size(phases)))
+  allocate(state(size(phases)))
   extmsg = ''
 
-  do ph = 1, phases%length
+  do ph = 1, size(phases)
     if (.not. myPlasticity(ph)) cycle
 
     associate(prm => param(ph), &

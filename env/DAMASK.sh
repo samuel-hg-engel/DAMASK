@@ -1,4 +1,5 @@
-# sets up an environment for DAMASK on bash
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# set up an environment for DAMASK on bash
 # usage:  source DAMASK.sh
 
 function canonicalPath {
@@ -88,8 +89,9 @@ fi
 
 export DAMASK_ROOT
 export PYTHONPATH=$DAMASK_ROOT/python:$PYTHONPATH
+source "$ENV_ROOT/damask_grid"
+source "$ENV_ROOT/damask_mesh"
 
-for var in BASE STAT SOLVER BRANCH; do
+for var in BASE STAT SOLVER BRANCH ENV_ROOT; do
   unset "${var}"
 done
-unset "ENV_ROOT"

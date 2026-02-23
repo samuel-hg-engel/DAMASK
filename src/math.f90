@@ -1,3 +1,4 @@
+! SPDX-License-Identifier: AGPL-3.0-or-later
 !--------------------------------------------------------------------------------------------------
 !> @author Franz Roters, Max-Planck-Institut für Eisenforschung GmbH
 !> @author Philip Eisenlohr, Max-Planck-Institut für Eisenforschung GmbH
@@ -5,6 +6,9 @@
 !> @author Martin Diehl, Max-Planck-Institut für Eisenforschung GmbH
 !> @brief Mathematical library, including random number generation and tensor representations
 !--------------------------------------------------------------------------------------------------
+#ifdef PETSC
+#include <petsc/finclude/petscsys.h>
+#endif
 module math
   use prec
   use misc
@@ -15,7 +19,6 @@ module math
   use LAPACK_interface
 
 #ifdef PETSC
-#include <petsc/finclude/petscsys.h>
   use PETScSys
 #ifndef PETSC_HAVE_MPI_F90MODULE_VISIBILITY
   use MPI_f08
@@ -86,7 +89,7 @@ module math
 contains
 
 !--------------------------------------------------------------------------------------------------
-!> @brief initialization of random seed generator and internal checks
+!> @brief Report random state and do self test.
 !--------------------------------------------------------------------------------------------------
 subroutine math_init()
 
@@ -108,7 +111,7 @@ subroutine math_init()
     seed = num_generic%get_as1dInt('random_seed',requiredSize=randSize) &
          + worldrank*42_MPI_INTEGER_KIND
   else
-    call random_seed()
+    call random_init(.false.,.false.)
     call random_seed(get = seed)
   end if
 
@@ -155,7 +158,9 @@ pure recursive subroutine math_sort(a, iStart, iEnd, sortDim)
   !> @brief Partitioning required for quicksort
   !-------------------------------------------------------------------------------------------------
   pure subroutine qsort_partition(a,p, istart, iend, sort)
-
+#ifndef __GFORTRAN__
+    import, none
+#endif
     integer, dimension(:,:), intent(inout) :: a
     integer,                 intent(out)   :: p                                                     ! Pivot element
     integer,                 intent(in)    :: istart,iend,sort
@@ -681,6 +686,27 @@ real(pREAL) pure function math_detSym33(m)
                   + m(1,1)*m(2,2)*m(3,3) + 2.0_pREAL * m(1,2)*m(1,3)*m(2,3)
 
 end function  math_detSym33
+
+
+!--------------------------------------------------------------------------------------------------
+!> @brief Calculate determinant of a matrix of arbitrary dimension.
+!--------------------------------------------------------------------------------------------------
+real(pREAL) pure function math_det(A)
+
+  real(pREAL), dimension(:,:), intent(in)  :: A
+
+  real(pREAL), dimension(size(A,1),size(A,1)) :: U
+  integer,     dimension(size(A,1))           :: ipiv
+  integer                                     :: ierr, i
+
+
+  U = A
+  call dgetrf(size(A,1),size(A,1),U,size(A,1),ipiv,ierr)
+  if (ierr /= 0) error stop 'LU decomposition failed'
+
+  math_det = product([(U(i,i) * merge(1.0_pREAL,-1.0_pREAL,ipiv(i)==i),i=1,size(A,1))])
+
+end function math_det
 
 
 !--------------------------------------------------------------------------------------------------
@@ -1374,6 +1400,9 @@ subroutine math_selfTest()
   if (dNeq(math_det33(math_symmetric33(t33)),math_detSym33(math_symmetric33(t33)),tol=1.0e-12_pREAL)) &
     error stop 'math_det33/math_detSym33'
 
+  if (dNeq(math_det33(t33),math_det(t33),tol=1.0e-12_pREAL)) &
+    error stop 'math_det33/math_det'
+
   if (any(dNeq(t33+transpose(t33),math_mul3333xx33(math_identity4th(),t33+transpose(t33))))) &
     error stop 'math_mul3333xx33/math_identity4th'
 
@@ -1420,7 +1449,10 @@ subroutine math_selfTest()
   if (any(dNeq0(txx_2,txx) .or. e)) &
     error stop 'math_invert(txx)/math_eye'
 
-  call math_invert(t99_2,e,t99) ! not sure how likely it is that we get a singular matrix
+  do while(abs(math_det(t99))<1.0e-8_pREAL)                                                         ! avoid approximately singular matrices
+    call random_number(t99)
+  end do
+  call math_invert(t99_2,e,t99)
   if (any(dNeq0(matmul(t99_2,t99)-math_eye(9),tol=1.0e-9_pREAL)) .or. e) &
     error stop 'math_invert(t99)'
 

@@ -1,3 +1,4 @@
+! SPDX-License-Identifier: AGPL-3.0-or-later
 !--------------------------------------------------------------------------------------------------
 !> @author Vitesh Shah, Max-Planck-Institut für Eisenforschung GmbH
 !> @author Yi-Chin Yang, Max-Planck-Institut für Eisenforschung GmbH
@@ -5,11 +6,13 @@
 !> @author Martin Diehl, Max-Planck-Institut für Eisenforschung GmbH
 !> @author Philip Eisenlohr, Michigan State University
 !--------------------------------------------------------------------------------------------------
+#ifdef PETSC
+#include <petsc/finclude/petscsys.h>
+#endif
 module HDF5_utilities
   use IO
   use HDF5
 #ifdef PETSC
-#include <petsc/finclude/petscsys.h>
   use PETScSys
 #ifndef PETSC_HAVE_MPI_F90MODULE_VISIBILITY
   use MPI_f08
@@ -223,7 +226,7 @@ integer(HID_T) function HDF5_openFile(fileName,mode,parallel)
     call HDF5_chkerr(hdferr,__FILE__//':'//IO_intAsStr(__LINE__))
   elseif (m == 'r') then
     inquire(file=fileName,exist=exist)
-    if (.not. exist) call IO_error(100,trim(fileName))
+    if (.not. exist) call IO_error(100_pI16,'file does not exist',trim(fileName),emph=[2])
     call H5Fopen_f(fileName,H5F_ACC_RDONLY_F,HDF5_openFile,hdferr,access_prp=plist_access_id)
     call HDF5_chkerr(hdferr,__FILE__//':'//IO_intAsStr(__LINE__))
   else
@@ -659,7 +662,7 @@ end subroutine HDF5_setLink
 
 
 !--------------------------------------------------------------------------------------------------
-!> @brief read dataset of type real with 1 dimension
+!> @brief Read dataset of type real with 1 dimension.
 !--------------------------------------------------------------------------------------------------
 subroutine HDF5_read_real1(dataset,loc_id,datasetName,parallel)
 
@@ -678,9 +681,8 @@ subroutine HDF5_read_real1(dataset,loc_id,datasetName,parallel)
 
   myShape = int(shape(dataset),HSIZE_T)
 
-  call initialize_read(dset_id,filespace_id,memspace_id,plist_id, aplist_id, &
-                       myStart,totalShape,loc_id,myShape,datasetName, &
-                       misc_optional(parallel,parallel_default))
+  call initialize_read(myStart,totalShape,dset_id,filespace_id,memspace_id,plist_id, aplist_id, &
+                       loc_id,myShape,datasetName,misc_optional(parallel,parallel_default))
 
   if (any(totalShape == 0)) return
 
@@ -693,7 +695,7 @@ subroutine HDF5_read_real1(dataset,loc_id,datasetName,parallel)
 end subroutine HDF5_read_real1
 
 !--------------------------------------------------------------------------------------------------
-!> @brief read dataset of type real with 2 dimensions
+!> @brief Read dataset of type real with 2 dimensions.
 !--------------------------------------------------------------------------------------------------
 subroutine HDF5_read_real2(dataset,loc_id,datasetName,parallel)
 
@@ -712,9 +714,8 @@ subroutine HDF5_read_real2(dataset,loc_id,datasetName,parallel)
 
   myShape = int(shape(dataset),HSIZE_T)
 
-  call initialize_read(dset_id,filespace_id,memspace_id,plist_id,aplist_id, &
-                       myStart,totalShape,loc_id,myShape,datasetName, &
-                       misc_optional(parallel,parallel_default))
+  call initialize_read(myStart,totalShape,dset_id,filespace_id,memspace_id,plist_id, aplist_id, &
+                       loc_id,myShape,datasetName,misc_optional(parallel,parallel_default))
 
   if (any(totalShape == 0)) return
 
@@ -727,7 +728,7 @@ subroutine HDF5_read_real2(dataset,loc_id,datasetName,parallel)
 end subroutine HDF5_read_real2
 
 !--------------------------------------------------------------------------------------------------
-!> @brief read dataset of type real with 2 dimensions
+!> @brief Read dataset of type real with 2 dimensions.
 !--------------------------------------------------------------------------------------------------
 subroutine HDF5_read_real3(dataset,loc_id,datasetName,parallel)
 
@@ -746,9 +747,8 @@ subroutine HDF5_read_real3(dataset,loc_id,datasetName,parallel)
 
   myShape = int(shape(dataset),HSIZE_T)
 
-  call initialize_read(dset_id,filespace_id,memspace_id,plist_id,aplist_id, &
-                       myStart,totalShape,loc_id,myShape,datasetName, &
-                       misc_optional(parallel,parallel_default))
+  call initialize_read(myStart,totalShape,dset_id,filespace_id,memspace_id,plist_id, aplist_id, &
+                       loc_id,myShape,datasetName,misc_optional(parallel,parallel_default))
 
   if (any(totalShape == 0)) return
 
@@ -761,11 +761,11 @@ subroutine HDF5_read_real3(dataset,loc_id,datasetName,parallel)
 end subroutine HDF5_read_real3
 
 !--------------------------------------------------------------------------------------------------
-!> @brief read dataset of type real with 4 dimensions
+!> @brief Read dataset of type real with 4 dimensions.
 !--------------------------------------------------------------------------------------------------
 subroutine HDF5_read_real4(dataset,loc_id,datasetName,parallel)
 
-  real(pREAL),      intent(out), dimension(:,:,:,:) :: dataset                                      !< read data
+  real(pREAL),      intent(out), dimension(:,:,:,:) :: dataset                                      !< data read from file
   integer(HID_T),   intent(in) :: loc_id                                                            !< file or group handle
   character(len=*), intent(in) :: datasetName                                                       !< name of the dataset in the file
   logical, intent(in), optional :: parallel                                                         !< dataset is distributed over multiple processes
@@ -781,9 +781,8 @@ subroutine HDF5_read_real4(dataset,loc_id,datasetName,parallel)
   myShape = int(shape(dataset),HSIZE_T)
   if (any(myShape(1:size(myShape)-1) == 0)) return                                                  !< empty dataset (last dimension can be empty)
 
-  call initialize_read(dset_id,filespace_id,memspace_id,plist_id,aplist_id, &
-                       myStart,totalShape,loc_id,myShape,datasetName, &
-                       misc_optional(parallel,parallel_default))
+  call initialize_read(myStart,totalShape,dset_id,filespace_id,memspace_id,plist_id, aplist_id, &
+                       loc_id,myShape,datasetName,misc_optional(parallel,parallel_default))
 
   if (any(totalShape == 0)) return
 
@@ -796,7 +795,7 @@ subroutine HDF5_read_real4(dataset,loc_id,datasetName,parallel)
 end subroutine HDF5_read_real4
 
 !--------------------------------------------------------------------------------------------------
-!> @brief read dataset of type real with 5 dimensions
+!> @brief Read dataset of type real with 5 dimensions.
 !--------------------------------------------------------------------------------------------------
 subroutine HDF5_read_real5(dataset,loc_id,datasetName,parallel)
 
@@ -816,9 +815,8 @@ subroutine HDF5_read_real5(dataset,loc_id,datasetName,parallel)
   myShape = int(shape(dataset),HSIZE_T)
   if (any(myShape(1:size(myShape)-1) == 0)) return                                                  !< empty dataset (last dimension can be empty)
 
-  call initialize_read(dset_id,filespace_id,memspace_id,plist_id,aplist_id, &
-                       myStart,totalShape,loc_id,myShape,datasetName, &
-                       misc_optional(parallel,parallel_default))
+  call initialize_read(myStart,totalShape,dset_id,filespace_id,memspace_id,plist_id, aplist_id, &
+                       loc_id,myShape,datasetName,misc_optional(parallel,parallel_default))
 
   if (any(totalShape == 0)) return
 
@@ -832,7 +830,7 @@ end subroutine HDF5_read_real5
 
 
 !--------------------------------------------------------------------------------------------------
-!> @brief read dataset of type integer with 1 dimension
+!> @brief Read dataset of type integer with 1 dimension.
 !--------------------------------------------------------------------------------------------------
 subroutine HDF5_read_int1(dataset,loc_id,datasetName,parallel)
 
@@ -851,9 +849,8 @@ subroutine HDF5_read_int1(dataset,loc_id,datasetName,parallel)
 
   myShape = int(shape(dataset),HSIZE_T)
 
-  call initialize_read(dset_id,filespace_id,memspace_id,plist_id,aplist_id, &
-                       myStart,totalShape,loc_id,myShape,datasetName, &
-                       misc_optional(parallel,parallel_default))
+  call initialize_read(myStart,totalShape,dset_id,filespace_id,memspace_id,plist_id, aplist_id, &
+                       loc_id,myShape,datasetName,misc_optional(parallel,parallel_default))
 
 if (any(totalShape == 0)) return
 
@@ -866,7 +863,7 @@ if (any(totalShape == 0)) return
 end subroutine HDF5_read_int1
 
 !--------------------------------------------------------------------------------------------------
-!> @brief read dataset of type integer with 2 dimensions
+!> @brief Read dataset of type integer with 2 dimensions.
 !--------------------------------------------------------------------------------------------------
 subroutine HDF5_read_int2(dataset,loc_id,datasetName,parallel)
 
@@ -886,9 +883,8 @@ subroutine HDF5_read_int2(dataset,loc_id,datasetName,parallel)
   myShape = int(shape(dataset),HSIZE_T)
   if (any(myShape(1:size(myShape)-1) == 0)) return                                                  !< empty dataset (last dimension can be empty)
 
-  call initialize_read(dset_id,filespace_id,memspace_id,plist_id,aplist_id, &
-                       myStart,totalShape,loc_id,myShape,datasetName, &
-                       misc_optional(parallel,parallel_default))
+  call initialize_read(myStart,totalShape,dset_id,filespace_id,memspace_id,plist_id, aplist_id, &
+                       loc_id,myShape,datasetName,misc_optional(parallel,parallel_default))
 
   if (any(totalShape == 0)) return
 
@@ -901,7 +897,7 @@ subroutine HDF5_read_int2(dataset,loc_id,datasetName,parallel)
 end subroutine HDF5_read_int2
 
 !--------------------------------------------------------------------------------------------------
-!> @brief read dataset of type integer with 3 dimensions
+!> @brief Read dataset of type integer with 3 dimensions.
 !--------------------------------------------------------------------------------------------------
 subroutine HDF5_read_int3(dataset,loc_id,datasetName,parallel)
 
@@ -920,9 +916,8 @@ subroutine HDF5_read_int3(dataset,loc_id,datasetName,parallel)
 
   myShape = int(shape(dataset),HSIZE_T)
 
-  call initialize_read(dset_id,filespace_id,memspace_id,plist_id,aplist_id, &
-                         myStart,totalShape,loc_id,myShape,datasetName, &
-                         misc_optional(parallel,parallel_default))
+  call initialize_read(myStart,totalShape,dset_id,filespace_id,memspace_id,plist_id, aplist_id, &
+                       loc_id,myShape,datasetName,misc_optional(parallel,parallel_default))
 
   if (any(totalShape == 0)) return
 
@@ -935,7 +930,7 @@ subroutine HDF5_read_int3(dataset,loc_id,datasetName,parallel)
 end subroutine HDF5_read_int3
 
 !--------------------------------------------------------------------------------------------------
-!> @brief read dataset of type integer withh 4 dimensions
+!> @brief Read dataset of type integer with 4 dimensions.
 !--------------------------------------------------------------------------------------------------
 subroutine HDF5_read_int4(dataset,loc_id,datasetName,parallel)
 
@@ -954,9 +949,8 @@ subroutine HDF5_read_int4(dataset,loc_id,datasetName,parallel)
 
   myShape = int(shape(dataset),HSIZE_T)
 
-  call initialize_read(dset_id,filespace_id,memspace_id,plist_id,aplist_id, &
-                         myStart,totalShape,loc_id,myShape,datasetName, &
-                         misc_optional(parallel,parallel_default))
+  call initialize_read(myStart,totalShape,dset_id,filespace_id,memspace_id,plist_id, aplist_id, &
+                       loc_id,myShape,datasetName,misc_optional(parallel,parallel_default))
 
   if (any(totalShape == 0)) return
 
@@ -969,7 +963,7 @@ subroutine HDF5_read_int4(dataset,loc_id,datasetName,parallel)
 end subroutine HDF5_read_int4
 
 !--------------------------------------------------------------------------------------------------
-!> @brief read dataset of type integer with 5 dimensions
+!> @brief Read dataset of type integer with 5 dimensions.
 !--------------------------------------------------------------------------------------------------
 subroutine HDF5_read_int5(dataset,loc_id,datasetName,parallel)
 
@@ -988,9 +982,8 @@ subroutine HDF5_read_int5(dataset,loc_id,datasetName,parallel)
 
   myShape = int(shape(dataset),HSIZE_T)
 
-  call initialize_read(dset_id,filespace_id,memspace_id,plist_id,aplist_id, &
-                         myStart,totalShape,loc_id,myShape,datasetName, &
-                         misc_optional(parallel,parallel_default))
+  call initialize_read(myStart,totalShape,dset_id,filespace_id,memspace_id,plist_id, aplist_id, &
+                       loc_id,myShape,datasetName,misc_optional(parallel,parallel_default))
 
   if (any(totalShape == 0)) return
 
@@ -1027,8 +1020,8 @@ subroutine HDF5_write_real1(dataset,loc_id,datasetName,parallel)
   myShape = int(shape(dataset),HSIZE_T)
   if (any(myShape(1:size(myShape)-1) == 0)) return                                                  !< empty dataset (last dimension can be empty)
 
-  call initialize_write(dset_id,filespace_id,memspace_id,plist_id, &
-                        myStart,totalShape,loc_id,myShape,datasetName,H5T_NATIVE_DOUBLE, &
+  call initialize_write(myStart,totalShape,dset_id,filespace_id,memspace_id,plist_id, &
+                        loc_id,myShape,datasetName,H5T_NATIVE_DOUBLE, &
                         misc_optional(parallel,parallel_default))
 
   if (product(totalShape) /= 0) then
@@ -1064,8 +1057,8 @@ subroutine HDF5_write_real2(dataset,loc_id,datasetName,parallel)
   myShape = int(shape(dataset),HSIZE_T)
   if (any(myShape(1:size(myShape)-1) == 0)) return                                                  !< empty dataset (last dimension can be empty)
 
-  call initialize_write(dset_id,filespace_id,memspace_id,plist_id, &
-                        myStart,totalShape,loc_id,myShape,datasetName,H5T_NATIVE_DOUBLE, &
+  call initialize_write(myStart,totalShape,dset_id,filespace_id,memspace_id,plist_id, &
+                        loc_id,myShape,datasetName,H5T_NATIVE_DOUBLE, &
                         misc_optional(parallel,parallel_default))
 
   if (product(totalShape) /= 0) then
@@ -1101,8 +1094,8 @@ subroutine HDF5_write_real3(dataset,loc_id,datasetName,parallel)
   myShape = int(shape(dataset),HSIZE_T)
   if (any(myShape(1:size(myShape)-1) == 0)) return                                                  !< empty dataset (last dimension can be empty)
 
-  call initialize_write(dset_id,filespace_id,memspace_id,plist_id, &
-                        myStart,totalShape,loc_id,myShape,datasetName,H5T_NATIVE_DOUBLE, &
+  call initialize_write(myStart,totalShape,dset_id,filespace_id,memspace_id,plist_id, &
+                        loc_id,myShape,datasetName,H5T_NATIVE_DOUBLE, &
                         misc_optional(parallel,parallel_default))
 
   if (product(totalShape) /= 0) then
@@ -1138,8 +1131,8 @@ subroutine HDF5_write_real4(dataset,loc_id,datasetName,parallel)
   myShape = int(shape(dataset),HSIZE_T)
   if (any(myShape(1:size(myShape)-1) == 0)) return                                                  !< empty dataset (last dimension can be empty)
 
-  call initialize_write(dset_id,filespace_id,memspace_id,plist_id, &
-                        myStart,totalShape,loc_id,myShape,datasetName,H5T_NATIVE_DOUBLE, &
+  call initialize_write(myStart,totalShape,dset_id,filespace_id,memspace_id,plist_id, &
+                        loc_id,myShape,datasetName,H5T_NATIVE_DOUBLE, &
                         misc_optional(parallel,parallel_default))
 
   if (product(totalShape) /= 0) then
@@ -1176,8 +1169,8 @@ subroutine HDF5_write_real5(dataset,loc_id,datasetName,parallel)
   myShape = int(shape(dataset),HSIZE_T)
   if (any(myShape(1:size(myShape)-1) == 0)) return                                                  !< empty dataset (last dimension can be empty)
 
-  call initialize_write(dset_id,filespace_id,memspace_id,plist_id, &
-                        myStart,totalShape,loc_id,myShape,datasetName,H5T_NATIVE_DOUBLE, &
+  call initialize_write(myStart,totalShape,dset_id,filespace_id,memspace_id,plist_id, &
+                        loc_id,myShape,datasetName,H5T_NATIVE_DOUBLE, &
                         misc_optional(parallel,parallel_default))
 
   if (product(totalShape) /= 0) then
@@ -1215,8 +1208,8 @@ subroutine HDF5_write_real(dataset,loc_id,datasetName,parallel)
   myShape = int(shape(dataset),HSIZE_T)
   if (any(myShape(1:size(myShape)-1) == 0)) return                                                  !< empty dataset (last dimension can be empty)
 
-  call initialize_write(dset_id,filespace_id,memspace_id,plist_id, &
-                        myStart,totalShape,loc_id,myShape,datasetName,H5T_NATIVE_DOUBLE, &
+  call initialize_write(myStart,totalShape,dset_id,filespace_id,memspace_id,plist_id, &
+                        loc_id,myShape,datasetName,H5T_NATIVE_DOUBLE, &
                         misc_optional(parallel,parallel_default))
 
   if (product(totalShape) /= 0) then
@@ -1332,8 +1325,8 @@ subroutine HDF5_write_int1(dataset,loc_id,datasetName,parallel)
   myShape = int(shape(dataset),HSIZE_T)
   if (any(myShape(1:size(myShape)-1) == 0)) return                                                  !< empty dataset (last dimension can be empty)
 
-  call initialize_write(dset_id,filespace_id,memspace_id,plist_id, &
-                        myStart,totalShape,loc_id,myShape,datasetName,H5T_NATIVE_INTEGER, &
+  call initialize_write(myStart,totalShape,dset_id,filespace_id,memspace_id,plist_id, &
+                        loc_id,myShape,datasetName,H5T_NATIVE_INTEGER, &
                         misc_optional(parallel,parallel_default))
 
   if (product(totalShape) /= 0) then
@@ -1369,8 +1362,8 @@ subroutine HDF5_write_int2(dataset,loc_id,datasetName,parallel)
   myShape = int(shape(dataset),HSIZE_T)
   if (any(myShape(1:size(myShape)-1) == 0)) return                                                  !< empty dataset (last dimension can be empty)
 
-  call initialize_write(dset_id,filespace_id,memspace_id,plist_id, &
-                        myStart,totalShape,loc_id,myShape,datasetName,H5T_NATIVE_INTEGER, &
+  call initialize_write(myStart,totalShape,dset_id,filespace_id,memspace_id,plist_id, &
+                        loc_id,myShape,datasetName,H5T_NATIVE_INTEGER, &
                         misc_optional(parallel,parallel_default))
 
   if (product(totalShape) /= 0) then
@@ -1406,8 +1399,8 @@ subroutine HDF5_write_int3(dataset,loc_id,datasetName,parallel)
   myShape = int(shape(dataset),HSIZE_T)
   if (any(myShape(1:size(myShape)-1) == 0)) return                                                  !< empty dataset (last dimension can be empty)
 
-  call initialize_write(dset_id,filespace_id,memspace_id,plist_id, &
-                        myStart,totalShape,loc_id,myShape,datasetName,H5T_NATIVE_INTEGER, &
+  call initialize_write(myStart,totalShape,dset_id,filespace_id,memspace_id,plist_id, &
+                        loc_id,myShape,datasetName,H5T_NATIVE_INTEGER, &
                         misc_optional(parallel,parallel_default))
 
   if (product(totalShape) /= 0) then
@@ -1443,8 +1436,8 @@ subroutine HDF5_write_int4(dataset,loc_id,datasetName,parallel)
   myShape = int(shape(dataset),HSIZE_T)
   if (any(myShape(1:size(myShape)-1) == 0)) return                                                  !< empty dataset (last dimension can be empty)
 
-  call initialize_write(dset_id,filespace_id,memspace_id,plist_id, &
-                        myStart,totalShape,loc_id,myShape,datasetName,H5T_NATIVE_INTEGER, &
+  call initialize_write(myStart,totalShape,dset_id,filespace_id,memspace_id,plist_id, &
+                        loc_id,myShape,datasetName,H5T_NATIVE_INTEGER, &
                         misc_optional(parallel,parallel_default))
 
   if (product(totalShape) /= 0) then
@@ -1480,8 +1473,8 @@ subroutine HDF5_write_int5(dataset,loc_id,datasetName,parallel)
   myShape = int(shape(dataset),HSIZE_T)
   if (any(myShape(1:size(myShape)-1) == 0)) return                                                  !< empty dataset (last dimension can be empty)
 
-  call initialize_write(dset_id,filespace_id,memspace_id,plist_id, &
-                        myStart,totalShape,loc_id,myShape,datasetName,H5T_NATIVE_INTEGER, &
+  call initialize_write(myStart,totalShape,dset_id,filespace_id,memspace_id,plist_id, &
+                        loc_id,myShape,datasetName,H5T_NATIVE_INTEGER, &
                         misc_optional(parallel,parallel_default))
 
   if (product(totalShape) /= 0) then
@@ -1519,8 +1512,8 @@ subroutine HDF5_write_int(dataset,loc_id,datasetName,parallel)
   myShape = int(shape(dataset),HSIZE_T)
   if (any(myShape(1:size(myShape)-1) == 0)) return                                                  !< empty dataset (last dimension can be empty)
 
-  call initialize_write(dset_id,filespace_id,memspace_id,plist_id, &
-                        myStart,totalShape,loc_id,myShape,datasetName,H5T_NATIVE_INTEGER, &
+  call initialize_write(myStart,totalShape,dset_id,filespace_id,memspace_id,plist_id, &
+                        loc_id,myShape,datasetName,H5T_NATIVE_INTEGER, &
                         misc_optional(parallel,parallel_default))
 
   if (product(totalShape) /= 0) then
@@ -1553,8 +1546,7 @@ end subroutine HDF5_write_int
 !--------------------------------------------------------------------------------------------------
 !> @brief Initialize read handles and determine global shape in case of parallel IO.
 !--------------------------------------------------------------------------------------------------
-subroutine initialize_read(dset_id, filespace_id, memspace_id, plist_id, aplist_id, &
-                           myStart, globalShape, &
+subroutine initialize_read(myStart, globalShape, dset_id, filespace_id, memspace_id, plist_id, aplist_id, &
                            loc_id,localShape,datasetName,parallel)
 
   integer(HID_T),    intent(in) :: loc_id                                                           !< file or group handle
@@ -1651,9 +1643,8 @@ end subroutine finalize_read
 !--------------------------------------------------------------------------------------------------
 !> @brief Initialize write handles and determine global shape in case of parallel IO.
 !--------------------------------------------------------------------------------------------------
-subroutine initialize_write(dset_id, filespace_id, memspace_id, plist_id, &
-                            myStart, totalShape, &
-                            loc_id,localShape,datasetName,datatype,parallel)
+subroutine initialize_write(myStart, totalShape, dset_id, filespace_id, memspace_id, plist_id, &
+                            loc_id, localShape, datasetName, datatype, parallel)
 
   integer(HID_T),    intent(in) :: loc_id                                                           !< file or group handle
   character(len=*),  intent(in) :: datasetName                                                      !< name of the dataset in the file
@@ -1708,7 +1699,7 @@ subroutine initialize_write(dset_id, filespace_id, memspace_id, plist_id, &
     call HDF5_chkerr(hdferr,__FILE__//':'//IO_intAsStr(__LINE__))
 
     if (product(totalShape) >= chunkSize*2_HSIZE_T) then
-      call H5Pset_chunk_f(dcpl, size(totalShape), getChunks(totalShape,chunkSize), hdferr)
+      call H5Pset_chunk_f(dcpl, size(totalShape), get_chunks(totalShape,chunkSize), hdferr)
       call HDF5_chkerr(hdferr,__FILE__//':'//IO_intAsStr(__LINE__))
       if (compression_possible) then
         call H5Pset_shuffle_f(dcpl, hdferr)
@@ -1736,23 +1727,23 @@ subroutine initialize_write(dset_id, filespace_id, memspace_id, plist_id, &
   call H5Sselect_hyperslab_f(filespace_id, H5S_SELECT_SET_F, myStart, localShape, hdferr)
   call HDF5_chkerr(hdferr,__FILE__//':'//IO_intAsStr(__LINE__))
 
-  call H5Pclose_f(dcpl , hdferr)
+  call H5Pclose_f(dcpl, hdferr)
   call HDF5_chkerr(hdferr,__FILE__//':'//IO_intAsStr(__LINE__))
 
   contains
   !------------------------------------------------------------------------------------------------
   !> @brief Determine chunk layout.
   !------------------------------------------------------------------------------------------------
-  pure function getChunks(totalShape,chunkSize)
+  pure function get_chunks(totalShape,chunkSize)
 
     integer(HSIZE_T), dimension(:), intent(in)    :: totalShape
     integer(HSIZE_T),               intent(in)    :: chunkSize
-    integer(HSIZE_T), dimension(size(totalShape)) :: getChunks
+    integer(HSIZE_T), dimension(size(totalShape)) :: get_chunks
 
-    getChunks = [totalShape(1:size(totalShape)-1),&
-                 chunkSize/product(totalShape(1:size(totalShape)-1))]
+    get_chunks = [totalShape(1:size(totalShape)-1),&
+                  chunkSize/product(totalShape(1:size(totalShape)-1))]
 
-  end function getChunks
+  end function get_chunks
 
 end subroutine initialize_write
 

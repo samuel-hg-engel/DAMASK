@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
 """
 Pre- and Post-Processing of DAMASK Simulations.
 
@@ -9,12 +10,18 @@ https://doi.org/10.21105/joss.07164
 
 from pathlib import Path as _Path
 import re as _re
-import logging
+import logging as _logging
+import multiprocessing as _mp
 
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+# https://docs.python.org/3/library/multiprocessing.html#multiprocessing-start-methods
+# needed for Python < 3.14
+if (_start_methods := _mp.get_all_start_methods())[0] == 'fork' and 'forkserver' in _start_methods:
+    _mp.set_start_method('forkserver',True)
+
+_logging.basicConfig(level=_logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
 name = 'damask'
-with open(_Path(__file__).parent/_Path('VERSION')) as _f:
+with open(_Path(__file__).parent/'VERSION') as _f:
     version = _re.sub(r'^v','',_f.readline().strip())
     __version__ = version
 
@@ -36,5 +43,6 @@ from ._vtk             import VTK              # noqa
 from ._yaml            import YAML             # noqa
 from ._configmaterial  import ConfigMaterial   # noqa
 from ._loadcasegrid    import LoadcaseGrid     # noqa
+from ._loadcasemesh    import LoadcaseMesh     # noqa
 from ._geomgrid        import GeomGrid         # noqa
 from ._result          import Result           # noqa

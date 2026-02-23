@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
 import subprocess
 import shlex
 import re
@@ -8,7 +9,7 @@ from typing import Literal
 
 logger = logging.getLogger(__name__)
 
-_marc_version = '2024.1'
+_marc_version = '2025.1'
 _marc_root = '/opt/msc'
 _damask_root = str(Path(__file__).parents[3])
 

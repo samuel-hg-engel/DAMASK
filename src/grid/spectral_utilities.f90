@@ -1,11 +1,12 @@
+! SPDX-License-Identifier: AGPL-3.0-or-later
 !--------------------------------------------------------------------------------------------------
 !> @author Martin Diehl, Max-Planck-Institut für Eisenforschung GmbH
 !> @author Philip Eisenlohr, Max-Planck-Institut für Eisenforschung GmbH
 !> @author Yi Hu, Max-Planck-Institut für Eisenforschung GmbH
 !> @brief Utilities used by the different spectral solver variants
 !--------------------------------------------------------------------------------------------------
-module spectral_utilities
 #include <petsc/finclude/petscsys.h>
+module spectral_utilities
   use PETScSys
 #ifndef PETSC_HAVE_MPI_F90MODULE_VISIBILITY
   use MPI_f08
@@ -149,7 +150,7 @@ subroutine spectral_utilities_init(active_Gamma, active_G, active_parabolic)
   print'(  1x,a)', 'https://doi.org/10.1016/j.ijplas.2014.02.006'//IO_EOL
 
   print'(  1x,a)', 'P. Shanthraj et al., Handbook of Mechanics of Materials, 2019'
-  print'(  1x,a)', 'https://doi.org/10.1007/978-981-10-6855-3_80'//IO_EOL
+  print'(  1x,a)', 'https://doi.org/10.1007/978-981-10-6884-3_80'//IO_EOL
 
   print'(  1x,a)', 'M. Frigo and S.G. Johnson, Proceedings of the IEEE 93(2):216–231, 2005'
   print'(  1x,a)', 'https://doi.org/10.1109/jproc.2004.840301'
@@ -196,22 +197,23 @@ subroutine spectral_utilities_init(active_Gamma, active_G, active_parabolic)
     case ('FWBW_difference')
       spectral_derivative_ID = DERIVATIVE_FWBW_DIFF_ID
     case default
-      call IO_error(892,ext_msg=trim(num_grid_fft%get_asStr('derivative')))
+      call IO_error(601_pI16,trim(num_grid_fft%get_asStr('derivative')), &
+                    'is not a valid approach for calculation of derivatives',emph=[1])
   end select
 
 
   select case(num_grid_fft%get_asStr('FFTW_plan_mode',defaultVal='FFTW_MEASURE'))
-    case('FFTW_ESTIMATE')                                                                           ! ordered from slow execution (but fast plan creation) to fast execution
+    case ('FFTW_ESTIMATE')                                                                          ! ordered from slow execution (but fast plan creation) to fast execution
       FFTW_planner_flag = FFTW_ESTIMATE
-    case('FFTW_MEASURE')
+    case ('FFTW_MEASURE')
       FFTW_planner_flag = FFTW_MEASURE
-    case('FFTW_PATIENT')
+    case ('FFTW_PATIENT')
       FFTW_planner_flag = FFTW_PATIENT
-    case('FFTW_EXHAUSTIVE')
+    case ('FFTW_EXHAUSTIVE')
       FFTW_planner_flag = FFTW_EXHAUSTIVE
     case default
-      call IO_warning(47,'using default FFTW_MEASURE instead of "'//trim(num_grid_fft%get_asStr('FFTW_plan_mode'))//'"')
-      FFTW_planner_flag = FFTW_MEASURE
+      call IO_error(601_pI16,trim(num_grid_fft%get_asStr('FFTW_plan_mode')), &
+                    'is not a valid planner flag for FFTW',emph=[1])
   end select
 
 !--------------------------------------------------------------------------------------------------
@@ -363,32 +365,20 @@ subroutine utilities_updateGamma(C)
     !$OMP PARALLEL DO PRIVATE(l,m,n,o,temp33_cmplx,xiDyad_cmplx,A,A_inv,err)
     do j = cells2Offset+1, cells2Offset+cells2; do k = 1, cells(3); do i = 1, cells1Red
       if (any([i,j,k] /= 1)) then                                                                   ! singular point at xi=(0.0,0.0,0.0) i.e. i=j=k=1
-#ifndef __INTEL_COMPILER
-        do concurrent(l = 1:3, m = 1:3)
+        do l = 1, 3; do m = 1, 3
           xiDyad_cmplx(l,m) = conjg(-xi1st(l,i,k,j-cells2Offset))*xi1st(m,i,k,j-cells2Offset)
-        end do
-        do concurrent(l = 1:3, m = 1:3)
+        end do; end do
+        do l = 1, 3; do m = 1, 3
           temp33_cmplx(l,m) = sum(cmplx(C_ref(l,1:3,m,1:3),0.0_pREAL,pREAL)*xiDyad_cmplx)
-        end do
-#else
-        forall(l = 1:3, m = 1:3) &
-          xiDyad_cmplx(l,m) = conjg(-xi1st(l,i,k,j-cells2Offset))*xi1st(m,i,k,j-cells2Offset)
-        forall(l = 1:3, m = 1:3) &
-          temp33_cmplx(l,m) = sum(cmplx(C_ref(l,1:3,m,1:3),0.0_pREAL,pREAL)*xiDyad_cmplx)
-#endif
+        end do; end do
         A(1:3,1:3) = temp33_cmplx%re; A(4:6,4:6) =  temp33_cmplx%re
         A(1:3,4:6) = temp33_cmplx%im; A(4:6,1:3) = -temp33_cmplx%im
         if (abs(math_det33(A(1:3,1:3))) > 1.e-16_pREAL) then
           call math_invert(A_inv, err, A)
           temp33_cmplx = cmplx(A_inv(1:3,1:3),A_inv(1:3,4:6),pREAL)
-#ifndef __INTEL_COMPILER
-          do concurrent(l=1:3, m=1:3, n=1:3, o=1:3)
+          do l = 1, 3; do m = 1, 3; do n = 1, 3; do o = 1, 3
             Gamma_hat(l,m,n,o,i,k,j-cells2Offset) = temp33_cmplx(l,n) * xiDyad_cmplx(o,m)
-          end do
-#else
-          forall(l=1:3, m=1:3, n=1:3, o=1:3) &
-            Gamma_hat(l,m,n,o,i,k,j-cells2Offset) = temp33_cmplx(l,n) * xiDyad_cmplx(o,m)
-#endif
+          end do; end do; end do; end do
         end if
       end if
     end do; end do; end do
@@ -427,37 +417,23 @@ function utilities_GammaConvolution(field, fieldAim) result(gammaField)
     !$OMP PARALLEL DO PRIVATE(l,m,n,o,temp33_cmplx,xiDyad_cmplx,A,A_inv,err,Gamma_hat)
     do j = 1, cells2; do k = 1, cells(3); do i = 1, cells1Red
       if (any([i,j+cells2Offset,k] /= 1)) then                                                      ! singular point at xi=(0.0,0.0,0.0) i.e. i=j=k=1
-#ifndef __INTEL_COMPILER
-        do concurrent(l = 1:3, m = 1:3)
+        do l = 1, 3; do m = 1, 3
           xiDyad_cmplx(l,m) = conjg(-xi1st(l,i,k,j))*xi1st(m,i,k,j)
-        end do
-        do concurrent(l = 1:3, m = 1:3)
+        end do; end do
+        do l = 1, 3; do m = 1, 3
           temp33_cmplx(l,m) = sum(cmplx(C_ref(l,1:3,m,1:3),0.0_pREAL,pREAL)*xiDyad_cmplx)
-        end do
-#else
-        forall(l = 1:3, m = 1:3) &
-          xiDyad_cmplx(l,m) = conjg(-xi1st(l,i,k,j))*xi1st(m,i,k,j)
-        forall(l = 1:3, m = 1:3) &
-          temp33_cmplx(l,m) = sum(cmplx(C_ref(l,1:3,m,1:3),0.0_pREAL,pREAL)*xiDyad_cmplx)
-#endif
+        end do; end do
         A(1:3,1:3) = temp33_cmplx%re; A(4:6,4:6) =  temp33_cmplx%re
         A(1:3,4:6) = temp33_cmplx%im; A(4:6,1:3) = -temp33_cmplx%im
         if (abs(math_det33(A(1:3,1:3))) > 1.e-16_pREAL) then
           call math_invert(A_inv, err, A)
           temp33_cmplx = cmplx(A_inv(1:3,1:3),A_inv(1:3,4:6),pREAL)
-#ifndef __INTEL_COMPILER
-          do concurrent(l=1:3, m=1:3, n=1:3, o=1:3)
+          do l = 1, 3; do m = 1, 3; do n = 1, 3; do o = 1, 3
             Gamma_hat(l,m,n,o,1,1,1) = temp33_cmplx(l,n)*xiDyad_cmplx(o,m)
-          end do
-          do concurrent(l = 1:3, m = 1:3)
+          end do; end do; end do; end do
+          do l = 1, 3; do m = 1, 3
             temp33_cmplx(l,m) = sum(Gamma_hat(l,m,1:3,1:3,1,1,1)*tensorField_fourier(1:3,1:3,i,k,j))
-          end do
-#else
-          forall(l=1:3, m=1:3, n=1:3, o=1:3) &
-            Gamma_hat(l,m,n,o,1,1,1) = temp33_cmplx(l,n)*xiDyad_cmplx(o,m)
-          forall(l = 1:3, m = 1:3) &
-            temp33_cmplx(l,m) = sum(Gamma_hat(l,m,1:3,1:3,1,1,1)*tensorField_fourier(1:3,1:3,i,k,j))
-#endif
+          end do; end do
           tensorField_fourier(1:3,1:3,i,k,j) = temp33_cmplx
         else
           tensorField_fourier(1:3,1:3,i,k,j) = cmplx(0.0_pREAL,0.0_pREAL,pREAL)
@@ -468,14 +444,9 @@ function utilities_GammaConvolution(field, fieldAim) result(gammaField)
   else memoryEfficient
     !$OMP PARALLEL DO PRIVATE(l,m,temp33_cmplx)
     do j = 1, cells2;  do k = 1, cells(3);  do i = 1,cells1Red
-#ifndef __INTEL_COMPILER
-      do concurrent(l = 1:3, m = 1:3)
+      do l = 1, 3; do m = 1, 3
         temp33_cmplx(l,m) = sum(Gamma_hat(l,m,1:3,1:3,i,k,j)*tensorField_fourier(1:3,1:3,i,k,j))
-      end do
-#else
-      forall(l = 1:3, m = 1:3) &
-        temp33_cmplx(l,m) = sum(Gamma_hat(l,m,1:3,1:3,i,k,j)*tensorField_fourier(1:3,1:3,i,k,j))
-#endif
+      end do; end do
       tensorField_fourier(1:3,1:3,i,k,j) = temp33_cmplx
     end do; end do; end do
     !$OMP END PARALLEL DO
@@ -510,15 +481,9 @@ function G_hat_init() result(G_hat_)
     if (any([i,j+cells2Offset,k] /= 1)) then                                                        ! singular point at xi=(0.0,0.0,0.0) i.e. i=j=k=1
       xi_norm_2 = cmplx(abs(dot_product(xi1st(:,i,k,j), xi1st(:,i,k,j))),0.0_pREAL,pREAL)
       if (xi_norm_2%re > 1.e-16_pREAL) then
-#ifndef __INTEL_COMPILER
-        do concurrent(l=1:3, m=1:3, n=1:3, o=1:3)
-            G_hat_(l,m,n,o,i,k,j) = delta(l,n)*conjg(-xi1st(m,i,k,j))*xi1st(o,i,k,j)/xi_norm_2
-        end do
-#else
-        forall(l=1:3, m=1:3, n=1:3, o=1:3)
-            G_hat_(l,m,n,o,i,k,j) = delta(l,n)*conjg(-xi1st(m,i,k,j))*xi1st(o,i,k,j)/xi_norm_2
-        end forall
-#endif
+        do l = 1, 3; do m = 1, 3; do n = 1, 3; do o = 1, 3
+          G_hat_(l,m,n,o,i,k,j) = delta(l,n)*conjg(-xi1st(m,i,k,j))*xi1st(o,i,k,j)/xi_norm_2
+        end do; end do; end do; end do
       end if
     end if
   end do; end do; end do
@@ -532,8 +497,8 @@ end function G_hat_init
 !> @details G*field_real = Fourier_inv( G_hat : Fourier(field_real) )
 !> @details Yi: make tensor field compatible
 !> @details G_hat index according to S Lucarini et al. MSMSE 2021
-!> @details fieldAim is for impose dP of stress bc in formResidual
-!> @details fieldAim is not needed for stress bc in formJacobian GK_op
+!> @details fieldAim is for impose dP of stress bc in form_residual
+!> @details fieldAim is not needed for stress bc in form_jacobian GK_op
 !--------------------------------------------------------------------------------------------------
 function utilities_G_Convolution(field,stress_mask,fieldAim) result(G_Field)
 
@@ -556,15 +521,9 @@ function utilities_G_Convolution(field,stress_mask,fieldAim) result(G_Field)
   !$OMP PARALLEL DO PRIVATE(l,m,temp33_cmplx)
   do j = 1, cells2; do k = 1, cells(3); do i = 1, cells1Red
     if (any([i,j+cells2Offset,k] /= 1)) then                                                        ! singular point at xi=(0.0,0.0,0.0) i.e. i=j=k=1
-#ifndef __INTEL_COMPILER
-      do concurrent(l=1:3, m=1:3)
+      do l = 1, 3; do m = 1, 3
         temp33_cmplx(l,m) = sum(G_hat(l,m,1:3,1:3,i,k,j)*tensorField_fourier(1:3,1:3,i,k,j))
-      end do
-#else
-      forall(l=1:3, m=1:3)
-        temp33_cmplx(l,m) = sum(G_hat(l,m,1:3,1:3,i,k,j)*tensorField_fourier(1:3,1:3,i,k,j))
-      end forall
-#endif
+      end do; end do
       tensorField_fourier(1:3,1:3,i,k,j) = temp33_cmplx
     end if
   end do; end do; end do

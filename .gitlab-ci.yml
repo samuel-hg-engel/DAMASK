@@ -1,86 +1,192 @@
 ---
 stages:
-  - prepare
-  - python
-  - compile
-  - fortran
-  - statistics
-  - finalize
+  - check_source
+  - processing
+  - core
+  - update_repositories
+  - documentation
 
-
-###################################################################################################
+####################################################################################################
 variables:
-  # ===============================================================================================
   # GitLab Settings
-  # ===============================================================================================
   GIT_SUBMODULE_STRATEGY: normal
-
-  # ===============================================================================================
   # Shortcut names
-  # ===============================================================================================
-  TESTROOT:   "$LOCAL_HOME/GitLabCI_Pipeline_$CI_PIPELINE_ID"
-  MARC_VERSION: "2024.1"
+  MARC_VERSION: '2025.1'
+  PETSC_GCC_LATEST: '2025.11.13'
+  PETSC_ONEAPI_LATEST: '2025.11.13'
+  PYTHON_LATEST: '2025.06.05'
 
-
-###################################################################################################
+####################################################################################################
 # https://docs.gitlab.com/ci/yaml/workflow
 workflow:
   rules:
-    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+    - if: $CI_PIPELINE_SOURCE == 'merge_request_event'
     - if: $CI_COMMIT_BRANCH && $CI_OPEN_MERGE_REQUESTS
       when: never
     - if: $CI_COMMIT_BRANCH
+  auto_cancel:
+    on_job_failure: all
 
-create_testroot_matesting:
-  stage: prepare
-  tags:
-    - matesting_bare-metal
-  script:
-    - mkdir -p ${TESTROOT}
 
+####################################################################################################
+# reusable building blocks for common tasks
 .on_merge:
   rules:
     - if: $CI_PIPELINE_SOURCE == 'merge_request_event'
 
-###################################################################################################
+.on_merge_without_squash:
+  rules:
+    - if: $CI_PIPELINE_SOURCE == 'merge_request_event' && $CI_MERGE_REQUEST_SQUASH_ON_MERGE != 'true'
 
-.python_base:
-  stage: python
-  image: git.damask-multiphysics.org:5050/damask/damask/python:$PYTHON_IMAGE
-  tags:
-    - docker_all
+.registry:
+  image: git.damask-multiphysics.org:5050/damask/damask/${IMAGE}
+
+####################################################################################################
+# images
+.petsc_gcc_default:
+  extends: .registry
+  variables:
+    IMAGE: gcc_petsc-default:${PETSC_GCC_LATEST}
+
+.petsc_gcc_debug:
+  extends: .registry
+  variables:
+    IMAGE: gcc_petsc-debug:${PETSC_GCC_LATEST}
+
+.petsc_gcc_debug_previous:
+  extends: .registry
+  parallel:
+    matrix:
+      - IMAGE:
+          - gcc_petsc-debug:2025.05.27a
+          - gcc_petsc-debug:2025.03.10a
+
+.petsc_oneapi_default:
+  extends: .registry
+  variables:
+    IMAGE: oneapi_petsc-default:${PETSC_ONEAPI_LATEST}
+
+.petsc_oneapi_debug:
+  extends: .registry
+  variables:
+    IMAGE: oneapi_petsc-debug:${PETSC_ONEAPI_LATEST}
+
+.petsc_oneapi_performance:
+  extends: .registry
+  variables:
+    IMAGE: oneapi_petsc-default:2025.09.30
+
+.petsc_oneapi_debug_previous:
+  extends: .registry
+  parallel:
+    matrix:
+      - IMAGE:
+          - oneapi_petsc-debug:2025.06.12a
+          - oneapi_petsc-debug:2025.03.27a
+
+.petsc:
+  extends: .registry
+  parallel:
+    matrix:
+      - IMAGE:
+          - gcc_petsc-default:${PETSC_GCC_LATEST}
+          - gcc_petsc-i64:${PETSC_GCC_LATEST}
+          - oneapi_petsc-default:${PETSC_ONEAPI_LATEST}
+
+.petsc_previous:
+  extends: .registry
+  parallel:
+    matrix:
+      - IMAGE:
+          - gcc_petsc-default:2025.05.27a
+          - gcc_petsc-i64:2025.05.27a
+          - oneapi_petsc-default:2025.06.12a
+          - gcc_petsc-default:2025.03.10a
+          - gcc_petsc-i64:2025.03.10a
+          - oneapi_petsc-default:2025.03.27a
+
+.python:
+  extends: .registry
+  variables:
+    IMAGE: python:${PYTHON_LATEST}
+
+.python_previous:
+  extends: .registry
+  parallel:
+    matrix:
+      - IMAGE:
+          - python:2025.01.05
+          - python:310_2412
+
+
+####################################################################################################
+# Check Source: compile (core) or import (processing) of each commit in a merge request w/o squash
+####################################################################################################
+
+.check_source:
+  extends: .on_merge_without_squash
+  stage: check_source
+  variables:
+    GIT_DEPTH: 0
+  allow_failure: true
+
+core:
+  extends: [.check_source, .petsc]
+  script:
+    - |
+      COMMITS=$(git log --reverse --format=format:%H origin/${CI_MERGE_REQUEST_TARGET_BRANCH_NAME}..${CI_COMMIT_SHA}~)
+      for COMMIT in ${COMMITS};do
+        printf "%b" "\e[1;32m::\nchecking commit ${COMMIT}\n::\e[0m\n"
+        git checkout ${COMMIT}
+        git submodule update --init
+        cmake -DGRID=ON -DMESH=ON -B build && cmake --build build --parallel 4 --target install
+      done
+
+
+processing:
+  extends: [.check_source, .petsc_gcc_default]
+  script:
+    - |
+      source env/DAMASK.sh
+      COMMITS=$(git log --reverse --format=format:%H origin/$CI_MERGE_REQUEST_TARGET_BRANCH_NAME..$CI_COMMIT_SHA)
+      for COMMIT in ${COMMITS};do
+        printf "%b" "\e[1;32m::\nchecking commit ${COMMIT}\n::.\e[0m\n"
+        git checkout ${COMMIT}
+        python -c 'import damask;print(damask.__version__)'
+      done
+
+####################################################################################################
+# Processing: pre- and post-processing tools written in Python
+####################################################################################################
+
+.processing:
+  stage: processing
   before_script:
     - python --version
     - pip list
 
-.python_default:
-  extends: .python_base
-  variables: {PYTHON_IMAGE: 2025.02.25}
-
-.python_min:
-  extends: .python_base
-  variables: {PYTHON_IMAGE: '310_2412'}
-
+mypy:
+  extends: [.processing, .python]
+  script:
+    - cd python
+    - mypy damask
 
 .create_package:
+  extends: .processing
   script:
     - sed -i 's/-[[:digit:]]*-.*//' VERSION
     - cd python
     - python3 -m build --wheel --no-isolation
 
 create_package:
-  extends:
-    - .create_package
-    - .python_default
+  extends: [.create_package, .python]
 
-create_package_min:
-  extends:
-    - .create_package
-    - .python_min
-    - .on_merge
+create_package_previous:
+  extends: [.create_package, .python_previous, .on_merge]
 
 
 .pytest:
+  extends: .processing
   script:
     - export DAMASK_ROOT=$(pwd)
     - PYTHONPATH=${DAMASK_ROOT}/python:$PYTHONPATH
@@ -89,112 +195,97 @@ create_package_min:
     - coverage report --fail-under=90 --show-missing
 
 pytest:
-  extends:
-    - .pytest
-    - .python_default
+  extends: [.pytest, .python]
 
-pytest_min:
-  extends:
-    - .pytest
-    - .python_min
-    - .on_merge
+pytest_previous:
+  extends: [.pytest, .python_previous, .on_merge]
 
 
 doctest:
-  extends: .python_default
+  extends: [.processing, .python]
   script:
-    - export DAMASK_ROOT=$(pwd)
-    - PYTHONPATH=${DAMASK_ROOT}/python:$PYTHONPATH
     - cd python
-    - cp tests/resources/doctest/* .
+    - cp tests/resources/doctest/*.* .
     # pretend neper to be present such that call to /bin/neper does not fail
     - echo '#!/usr/bin/env bash' > /bin/neper
     - chmod +x /bin/neper
-    - python3 -m pytest -v --doctest-modules -k 'not result' damask
+    - PYTHONPATH=${PWD}:${PYTHONPATH} NO_COLOR=1 python3 -m pytest -v --doctest-modules damask
 
-mypy:
-  extends: .python_default
+
+####################################################################################################
+# Core: DAMASK core written in Fortran, C++, and C
+####################################################################################################
+
+open-source:
+  stage: core
+  extends: .petsc_gcc_default
+  tags:
+    - long_running
+  needs: []
+  before_script:
+    - cmake -DGRID=ON -DMESH=ON -B build -G Ninja && cmake --build build --parallel 4 --target install
+    - source env/DAMASK.sh
   script:
-    - cd python
-    - mypy damask
+    - cd tests/integration
+    - export OMP_NUM_THREADS=2
+    - pytest -v -x -n 3 --dist=loadscope --durations=20 -k 'not compile and not Marc'
 
-###################################################################################################
+c++-linter:
+  stage: core
+  extends: .petsc_gcc_default
+  script:
+    # for now only capture non-solver and test modules
+    - BOOST_MAPPINGS=/usr/share/include-what-you-use/boost-all.imp
+    - cmake -B build -DTEST=ON
+       -DCMAKE_CXX_INCLUDE_WHAT_YOU_USE="include-what-you-use;-Xiwyu;--error;-Xiwyu;--mapping_file=${BOOST_MAPPINGS}"
+       -DCMAKE_CXX_CLANG_TIDY='clang-tidy;--checks=cppcoreguidelines*,bugprone*;--warnings-as-errors=cppcoreguidelines*,bugprone*'
+    - cmake --build build --parallel --target install
 
 .unittest:
-  stage: compile
-  tags:
-    - docker_all
+  stage: core
   script:
     - source env/DAMASK.sh
     - ./bin/DAMASK_test
-    - find . -name '*.gcda' -not -path "**/test/*" -exec gcov {} \;
+    - find build -name '*.gcda' -exec gcov {} \; | grep src/.*\.f90 -A+1 || true
+    - ctest --test-dir build/tests/unit_cpp/ --output-on-failure -j"$(nproc)" --no-tests=ignore
   parallel:
     matrix:
       - BUILD_TYPE: [DEBUG, RELEASE, PERFORMANCE]
 
-.unittest_GCC:
+.unittest_gcc:
   extends: .unittest
   before_script:
-    - cmake -B builddir -DDAMASK_SOLVER=test -DCMAKE_INSTALL_PREFIX=${PWD} -DCMAKE_BUILD_TYPE=${BUILD_TYPE} -DBUILDCMD_POST=-coverage
-    - cmake --build builddir --target install
+    - cmake -B build -DTEST=ON -DCMAKE_INSTALL_PREFIX=${PWD} -DCMAKE_BUILD_TYPE=${BUILD_TYPE} -DBUILDCMD_POST=-coverage
+    - cmake --build build --target install
 
-.unittest_oneAPI:
+.unittest_oneapi:
   extends: .unittest
   before_script:
-    - cmake -B builddir -DDAMASK_SOLVER=test -DCMAKE_INSTALL_PREFIX=${PWD} -DCMAKE_BUILD_TYPE=${BUILD_TYPE}
-    - cmake --build builddir --target install
+    - cmake -B build -DTEST=ON -DCMAKE_INSTALL_PREFIX=${PWD} -DCMAKE_BUILD_TYPE=${BUILD_TYPE}
+    - cmake --build build --target install
 
 
-unittest_GCC:
-  extends: .unittest_GCC
-  image: git.damask-multiphysics.org:5050/damask/damask/gcc_petsc-debug:2025.04.30
+unittest_gcc:
+  extends: [.unittest_gcc, .petsc_gcc_debug]
 
-unittest_oneAPI:
-  extends: .unittest_oneAPI
-  image: git.damask-multiphysics.org:5050/damask/damask/oneapi_petsc-debug:2025.04.30
+unittest_oneapi:
+  extends: [.unittest_oneapi, .petsc_oneapi_debug]
 
 
-unittest_GCC_min:
-  extends:
-    - .unittest_GCC
-    - .on_merge
-  image: git.damask-multiphysics.org:5050/damask/damask/gcc_petsc-debug:2025.03.10
+unittest_gcc_previous:
+  extends: [.unittest_gcc, .petsc_gcc_debug_previous, .on_merge]
 
-unittest_oneAPI_min:
-  extends:
-    - .unittest_oneAPI
-    - .on_merge
-  image: git.damask-multiphysics.org:5050/damask/damask/oneapi_petsc-debug:2025.03.27
+unittest_oneapi_previous:
+  extends: [.unittest_oneapi, .petsc_oneapi_debug_previous, .on_merge]
 
-
-###################################################################################################
 
 .compile:
-  stage: compile
-  tags:
-    - docker_all
+  stage: core
   before_script:
+    - ${PETSC_DIR}/lib/petsc/bin/petscversion
     - tail +$(grep -n 'Configure Actions.*' /petsc/configure.log | cut -f 1 -d:) /petsc/configure.log
-    - head -n 10 /petsc/include/petscversion.h | tail -n 6
     - source env/DAMASK.sh
-    - cd PRIVATE/testing
-  image: git.damask-multiphysics.org:5050/damask/damask/${PETSC_IMAGE}
-
-.fortran_default:
-  parallel:
-    matrix:
-      - PETSC_IMAGE:
-          - gcc_petsc-default:2025.04.30
-          - gcc_petsc-i64:2025.04.30
-          - oneapi_petsc-default:2025.04.30
-
-.fortran_min:
-  parallel:
-    matrix:
-      - PETSC_IMAGE:
-          - gcc_petsc-default:2025.03.10
-          - gcc_petsc-i64:2025.03.10
-          - oneapi_petsc-default:2025.03.27
+    - cd tests/integration
 
 .compile_grid:
   extends: .compile
@@ -207,176 +298,114 @@ unittest_oneAPI_min:
     - pytest -v -k 'compile and mesh'
 
 compile_grid:
-  extends:
-    - .compile_grid
-    - .fortran_default
+  extends: [.compile_grid, .petsc]
 
 compile_mesh:
-  extends:
-    - .compile_mesh
-    - .fortran_default
+  extends: [.compile_mesh, .petsc]
 
-compile_grid_min:
-  extends:
-    - .compile_grid
-    - .fortran_min
-    - .on_merge
+compile_grid_previous:
+  extends: [.compile_grid, .petsc_previous, .on_merge]
 
-compile_mesh_min:
-  extends:
-    - .compile_mesh
-    - .fortran_min
-    - .on_merge
+compile_mesh_previous:
+  extends: [.compile_mesh, .petsc_previous, .on_merge]
 
 Marc_patch:
-  stage: compile
+  stage: core
   image: git.damask-multiphysics.org:5050/damask/damask/marc_base:${MARC_VERSION}
-  tags:
-    - docker_all
   script:
     - source env/DAMASK.sh
     - export TMPDIR=/tmp
-    - python3 install/MarcMentat/MSC_modifications.py --editor=gted --marc-version="${MARC_VERSION}" --damask-root="${CI_PROJECT_DIR}" --marc-root=/opt/msc
-    - test -f "/opt/msc/mentat${MARC_VERSION}/bin/kill6"
+    - python3 install/MarcMentat/MSC_modifications.py --editor=gted --marc-version=${MARC_VERSION} --damask-root=${CI_PROJECT_DIR} --marc-root=/opt/msc
+    - test -f /opt/msc/mentat${MARC_VERSION}/bin/kill6
     - cd examples/Marc && python3 -c "import damask;damask.solver.Marc(version=${MARC_VERSION}).submit_job('r-value','texture',True,'h')"
-    - test -f "${CI_PROJECT_DIR}/src/Marc/DAMASK_Marc.marc" || { echo "Marc simulation failed, DAMASK_Marc.marc not generated"; exit 1; }
+    - test -f ${CI_PROJECT_DIR}/src/Marc/DAMASK_Marc.marc || { echo 'Marc simulation failed, DAMASK_Marc.marc not generated'; exit 1; }
 
 Marc_compile:
-  stage: compile
+  stage: core
   image: git.damask-multiphysics.org:5050/damask/damask/marc_patched:${MARC_VERSION}
-  tags:
-    - docker_all
   script:
     - source env/DAMASK.sh
-    - cd PRIVATE/testing
+    - cd tests/integration
     - pytest -k 'compile and Marc'
 
 
-###################################################################################################
-
 .configexamples_debug:
-  stage: compile
-  tags:
-    - docker_all
+  stage: core
   before_script:
+    - ${PETSC_DIR}/lib/petsc/bin/petscversion
     - tail +$(grep -n 'Configure Actions.*' /petsc/configure.log | cut -f 1 -d:) /petsc/configure.log
-    - head -n 10 /petsc/include/petscversion.h | tail -n 6
     - source env/DAMASK.sh
-    - cmake -B builddir -DDAMASK_SOLVER=grid -DCMAKE_BUILD_TYPE=DEBUG
-    - cmake --build builddir --target install
-    - cd PRIVATE/testing
+    - cmake -B build -DGRID=ON -DCMAKE_BUILD_TYPE=DEBUG
+    - cmake --build build --target install
+    - cd tests/integration
   script:
-    - pytest -v -k configexamples
+    - python3 -X faulthandler -m pytest -p no:faulthandler -v -k configexamples                     # https://blog.xmatthias.com/post/pytest-debug-segfault/
 
-configexamples_debug_GCC:
-  extends: .configexamples_debug
-  image: git.damask-multiphysics.org:5050/damask/damask/gcc_petsc-default:2025.04.30
+configexamples_debug_gcc:
+  extends: [.configexamples_debug, .petsc_gcc_default]
 
-configexamples_debug_oneAPI:
-  extends: .configexamples_debug
-  image: git.damask-multiphysics.org:5050/damask/damask/oneapi_petsc-default:2025.04.30
-
-##################################################################################################
-
-open-source_GCC:
-  stage: fortran
-  tags:
-    - docker_all
-  image: git.damask-multiphysics.org:5050/damask/damask/gcc_petsc-default:2025.04.30
-  before_script:
-    - cmake -DDAMASK_SOLVER=grid -B build/grid && cmake --build build/grid --parallel 2 --target install
-    - cmake -DDAMASK_SOLVER=mesh -B build/mesh && cmake --build build/mesh --parallel 2 --target install
-    - source env/DAMASK.sh
-  script:
-    - cd PRIVATE/testing
-    - pytest -v -k 'not compile and not (signal or restart) and not Marc'
-
-open-source_signal_restart_GCC:
-  stage: fortran
-  tags:
-    - matesting_bare-metal
-  before_script:
-    - source /etc/zsh/spackenv
-    - spack env activate DAMASK_oneapi_2503
-    - cd $(mktemp -d)
-    - cmake -DDAMASK_SOLVER=grid -DCMAKE_INSTALL_PREFIX=${TESTROOT} ${CI_PROJECT_DIR}
-    - make -j2 all install
-    - export PATH=${TESTROOT}/bin:${PATH}
-    - cd ${CI_PROJECT_DIR}
-    - source env/DAMASK.sh
-    - echo Job start:" $(date)"
-  script:
-    - cd PRIVATE/testing
-    - pytest -v -k 'signal or restart' -m 'not cifail' --basetemp ${TESTROOT}/open-source -v
-  after_script:
-    - echo Job end:" $(date)"
+configexamples_debug_oneapi:
+  extends: [.configexamples_debug, .petsc_oneapi_default]
 
 Marc_run:
-  stage: fortran
+  stage: core
   image: git.damask-multiphysics.org:5050/damask/damask/marc_patched:${MARC_VERSION}
-  tags:
-    - docker_all
   before_script:
     - source env/DAMASK.sh
     - cd examples/Marc && python3 -c "import damask;damask.solver.Marc(version=${MARC_VERSION}).submit_job('r-value','texture',True,'h')"
   script:
-    - cd ${CI_PROJECT_DIR}/PRIVATE/testing
-    - pytest -k 'not compile and Marc' -m 'not cifail'
+    - cd ${CI_PROJECT_DIR}/tests/integration
+    - pytest -k 'not compile and Marc'
 
 # Needs closer look
 # Phenopowerlaw_singleSlip:
-#   stage: fortran
+#   stage: core
 #   script: Phenopowerlaw_singleSlip/test.py
 
-###################################################################################################
 grid_performance:
-  stage: statistics
+  stage: core
+  extends: .petsc_oneapi_performance
   tags:
-    - matesting_bare-metal
+    - matesting
   before_script:
-    - source /etc/zsh/spackenv
-    - spack env activate DAMASK_oneapi_2503
+    - cmake -DGRID=ON -DOPTIMIZATION=AGGRESSIVE -B build
+    - cmake --build build --parallel 4 --target install
     - source env/DAMASK.sh
-    - echo Job start:" $(date)"
   script:
-    - cd $(mktemp -d)
-    - cmake -DOPTIMIZATION=AGGRESSIVE -DDAMASK_SOLVER=grid -DCMAKE_INSTALL_PREFIX=./ ${CI_PROJECT_DIR}
-    - make -j2 all install
-    - export PATH=${PWD}/bin:${PATH}
-    - cd $(mktemp -d)
-    - git clone -q https://damask_user:${STATISTICS_TOKEN}@git.damask-multiphysics.org/damask/statistics.git .
-    - ./measure_performance.py --input_dir ${CI_PROJECT_DIR}/examples/grid --tag ${CI_COMMIT_SHA}
-    - >
-        if [ ${CI_COMMIT_BRANCH} == development ]; then
-          git add performance.txt
-          git commit -m ${CI_PIPELINE_ID}_${CI_COMMIT_SHA}
-          git push
-        fi
+    - git clone -q https://damask_user:${STATISTICS_TOKEN}@git.damask-multiphysics.org/damask/statistics.git
+    - ./statistics/measure_performance.py --input_dir examples/grid --tag ${CI_COMMIT_SHA} --output_dir statistics
+    - cp statistics/performance.txt .
+  artifacts:
+    paths: [performance.txt]
 
 
-###################################################################################################
-update_website_master:
-  stage: finalize
-  trigger:
-    project: damask/website
-    branch: master
-  only:
-    - development
+####################################################################################################
+# Update Repositories
+####################################################################################################
 
-update_website_3.0:
-  stage: finalize
-  trigger:
-    project: damask/website
-    branch: "3.0"
-  only:
-    - "3.0"
+.update:
+  stage: update_repositories
+  image:
+    name: alpine/git
+    entrypoint: [""]
+  before_script:
+    - git config --global user.name "testbot"
+    - git config --global user.email "testbot@damask-multiphysics.org"
+  rules: [if: $CI_COMMIT_BRANCH == 'development']
+
+update_statistics:
+  extends: .update
+  dependencies:
+    - grid_performance
+  script:
+    - git clone -q https://damask_user:${STATISTICS_TOKEN}@git.damask-multiphysics.org/damask/statistics.git
+    - cp performance.txt statistics/
+    - cd statistics
+    - git commit -m ${CI_PIPELINE_ID}_${CI_COMMIT_SHA} performance.txt
+    - git push
 
 update_revision:
-  stage: finalize
-  tags:
-    - matesting2_bare-metal
-  before_script:
-    - echo Job start:" $(date)"
+  extends: .update
   script:
     - cd $(mktemp -d)
     - git clone -b development -q https://damask_user:${TOKEN}@git.damask-multiphysics.org/damask/DAMASK.git .
@@ -386,5 +415,22 @@ update_revision:
        git diff-index --quiet HEAD ||
        git commit VERSION -m "[skip ci] updated version information after successful test of $VERSION"
     - if [ ${CI_COMMIT_SHA} == $(git rev-parse HEAD^) ]; then git push --atomic --no-verify origin HEAD:development HEAD:master; fi
-  only:
-    - development
+
+
+####################################################################################################
+# Documentation
+####################################################################################################
+
+publish_website_master:
+  stage: documentation
+  trigger:
+    project: damask/website
+    branch: master
+  rules: [if: $CI_COMMIT_BRANCH == 'development']
+
+publish_website_3.0:
+  stage: documentation
+  trigger:
+    project: damask/website
+    branch: '3.0'
+  rules: [if: $CI_COMMIT_BRANCH == '3.0']

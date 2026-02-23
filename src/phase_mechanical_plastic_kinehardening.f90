@@ -1,3 +1,4 @@
+! SPDX-License-Identifier: AGPL-3.0-or-later
 !--------------------------------------------------------------------------------------------------
 !> @author Philip Eisenlohr, Michigan State University
 !> @author Zhuowen Zhao, Michigan State University
@@ -105,13 +106,13 @@ module function plastic_kinehardening_init() result(myPlasticity)
   print'(/,1x,a,1x,i0)', '# phases:',count(myPlasticity); flush(IO_STDOUT)
 
   phases => config_material%get_dict('phase')
-  allocate(param(phases%length))
-  allocate(indexDotState(phases%length))
-  allocate(state(phases%length))
-  allocate(deltaState(phases%length))
+  allocate(param(size(phases)))
+  allocate(indexDotState(size(phases)))
+  allocate(state(size(phases)))
+  allocate(deltaState(size(phases)))
   extmsg = ''
 
-  do ph = 1, phases%length
+  do ph = 1, size(phases)
     if (.not. myPlasticity(ph)) cycle
 
     associate(prm => param(ph), &
@@ -134,18 +135,19 @@ module function plastic_kinehardening_init() result(myPlasticity)
 
 !--------------------------------------------------------------------------------------------------
 ! slip related parameters
-    N_sl         = pl%get_as1dInt('N_sl',defaultVal=emptyIntArray)
+    N_sl = pl%get_as1dInt('N_sl',defaultVal=emptyIntArray)
     prm%sum_N_sl = sum(abs(N_sl))
     slipActive: if (prm%sum_N_sl > 0) then
-      prm%systems_sl = crystal_labels_slip(N_sl,phase_lattice(ph))
       prm%P = crystal_SchmidMatrix_slip(N_sl,phase_lattice(ph),phase_cOverA(ph))
+      prm%systems_sl = crystal_labels_slip(N_sl,phase_lattice(ph))
 
       a_nS = pl%get_as2dReal('a_non-Schmid',defaultVal=reshape(emptyRealArray,[0,0]))
-      prm%P_nS_pos = crystal_SchmidMatrix_slip(N_sl,phase_lattice(ph),phase_cOverA(ph),nonSchmidCoefficients=a_nS,sense=+1)
-      prm%P_nS_neg = crystal_SchmidMatrix_slip(N_sl,phase_lattice(ph),phase_cOverA(ph),nonSchmidCoefficients=a_nS,sense=-1)
+      prm%P_nS_pos = crystal_SchmidMatrix_slip(N_sl,phase_lattice(ph),phase_cOverA(ph), &
+                                               nonSchmidCoefficients=a_nS,sense=+1)
+      prm%P_nS_neg = crystal_SchmidMatrix_slip(N_sl,phase_lattice(ph),phase_cOverA(ph), &
+                                               nonSchmidCoefficients=a_nS,sense=-1)
 
-      prm%h_sl_sl = crystal_interaction_SlipBySlip(N_sl,pl%get_as1dReal('h_sl-sl'), &
-                                                   phase_lattice(ph))
+      prm%h_sl_sl = crystal_interaction_SlipBySlip(N_sl,pl%get_as1dReal('h_sl-sl'),phase_lattice(ph))
 
       xi_0            = math_expand(pl%get_as1dReal('xi_0',        requiredSize=size(N_sl)),N_sl)
       prm%dot_gamma_0 = math_expand(pl%get_as1dReal('dot_gamma_0', requiredSize=size(N_sl)),N_sl)

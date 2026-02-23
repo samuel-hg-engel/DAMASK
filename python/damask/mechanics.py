@@ -1,18 +1,20 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
 """
 Finite-strain continuum mechanics.
 
 All routines operate on numpy.ndarrays of shape (...,3,3).
 """
 
-from typing import Sequence as _Sequence, Union as _Union #, Literal as _Literal
+from typing import Sequence as _Sequence, Union as _Union, Literal as _Literal
 
 import numpy as _np
+from numpy import typing as _npt
 
 from . import tensor as _tensor
 from . import _rotation
 
 
-def deformation_Cauchy_Green_left(F: _np.ndarray) -> _np.ndarray:
+def deformation_Cauchy_Green_left(F: _npt.NDArray[_np.floating]) -> _npt.NDArray[_np.floating]:
     r"""
     Calculate left Cauchy-Green deformation tensor (Finger deformation tensor).
 
@@ -48,7 +50,7 @@ def deformation_Cauchy_Green_left(F: _np.ndarray) -> _np.ndarray:
     return _np.matmul(F,_tensor.transpose(F))
 
 
-def deformation_Cauchy_Green_right(F: _np.ndarray) -> _np.ndarray:
+def deformation_Cauchy_Green_right(F: _npt.NDArray[_np.floating]) -> _npt.NDArray[_np.floating]:
     r"""
     Calculate right Cauchy-Green deformation tensor.
 
@@ -84,7 +86,41 @@ def deformation_Cauchy_Green_right(F: _np.ndarray) -> _np.ndarray:
     return _np.matmul(_tensor.transpose(F),F)
 
 
-def equivalent_strain_Mises(epsilon: _np.ndarray) -> _np.ndarray:
+def deviatoric(sigma: _npt.NDArray[_np.floating]) -> _npt.NDArray[_np.floating]:
+    r"""
+    Calculate deviatoric part of a stress tensor.
+
+    Parameters
+    ----------
+    sigma : numpy.ndarray, shape (...,3,3)
+        Cauchy stress tensor of which the deviatoric part is computed.
+
+    Returns
+    -------
+    sigma' : numpy.ndarray, shape (...,3,3)
+        Deviatoric part of sigma.
+
+    See Also
+    --------
+    isochoric: Equivalent function for strain.
+    tensor.traceless : Same function with a generic name.
+    tensor.spherical : Calculate spherical part of a tensor.
+
+    Notes
+    -----
+    The deviatoric part of a stress tensor is defined as:
+
+    .. math::
+
+        \vb{sigma}' = \vb{sigma} - \vb{I}_\text{p},
+
+    where :math:`\vb{I}_\text{p}` is the spherical
+    part of the stress tensor mapped onto identity.
+    """
+    return _tensor.traceless(sigma)
+
+
+def equivalent_strain_Mises(epsilon: _npt.NDArray[_np.floating]) -> _npt.NDArray[_np.floating]:
     r"""
     Calculate the von Mises equivalent of a strain tensor.
 
@@ -117,7 +153,7 @@ def equivalent_strain_Mises(epsilon: _np.ndarray) -> _np.ndarray:
     return _equivalent_Mises(epsilon,2.0/3.0)
 
 
-def equivalent_stress_Mises(sigma: _np.ndarray) -> _np.ndarray:
+def equivalent_stress_Mises(sigma: _npt.NDArray[_np.floating]) -> _npt.NDArray[_np.floating]:
     r"""
     Calculate the von Mises equivalent of a stress tensor.
 
@@ -150,7 +186,41 @@ def equivalent_stress_Mises(sigma: _np.ndarray) -> _np.ndarray:
     return _equivalent_Mises(sigma,3.0/2.0)
 
 
-def maximum_shear(T_sym: _np.ndarray) -> _np.ndarray:
+def isochoric(epsilon: _npt.NDArray[_np.floating]) -> _npt.NDArray[_np.floating]:
+    r"""
+    Calculate isochoric part of a strain tensor.
+
+    Parameters
+    ----------
+    epsilon : numpy.ndarray, shape (...,3,3)
+        Strain tensor of which the isochoric part is computed.
+
+    Returns
+    -------
+    epsilon' : numpy.ndarray, shape (...,3,3)
+        Isochoric part of epsilon.
+
+    See Also
+    --------
+    deviatoric: Equivalent function for stress.
+    tensor.traceless : Same function with a generic name.
+    tensor.spherical : Calculate spherical part of a tensor.
+
+    Notes
+    -----
+    The deviatoric part of a strain tensor is defined as:
+
+    .. math::
+
+        \vb{epsilon}' = \vb{epsilon} - \vb{I}_\text{p},
+
+    where :math:`\vb{I}_\text{p}` is the spherical
+    part of the epsilon tensor mapped onto identity.
+    """
+    return _tensor.traceless(epsilon)
+
+
+def maximum_shear(T_sym: _npt.NDArray[_np.floating]) -> _npt.NDArray[_np.floating]:
     """
     Calculate the maximum shear component of a symmetric tensor.
 
@@ -173,7 +243,7 @@ def maximum_shear(T_sym: _np.ndarray) -> _np.ndarray:
     return (w[...,0] - w[...,2])*0.5
 
 
-def rotation(T: _np.ndarray) -> _rotation.Rotation:
+def rotation(T: _npt.NDArray[_np.floating]) -> _rotation.Rotation:
     r"""
     Calculate the rotational part of a tensor.
 
@@ -206,10 +276,9 @@ def rotation(T: _np.ndarray) -> _rotation.Rotation:
     return _rotation.Rotation.from_matrix(_polar_decomposition(T,'R')[0])
 
 
-def strain(F: _np.ndarray,
-           #t: _Literal['V', 'U'],   should work, but rejected by SC
-           t: str,
-           m: float) -> _np.ndarray:
+def strain(F: _npt.NDArray[_np.floating],
+           t: _Literal['V', 'U'],                                                                   # noqa: F821
+           m: float) -> _npt.NDArray[_np.floating]:
     r"""
     Calculate strain tensor (Seth–Hill family).
 
@@ -262,8 +331,8 @@ def strain(F: _np.ndarray,
         else  0.5/m * (_np.einsum('...j,...kj,...lj',w**m,      n,n) - _np.eye(3))
 
 
-def stress_Cauchy(P: _np.ndarray,
-                  F: _np.ndarray) -> _np.ndarray:
+def stress_Cauchy(P: _npt.NDArray[_np.floating],
+                  F: _npt.NDArray[_np.floating]) -> _npt.NDArray[_np.floating]:
     r"""
     Calculate the Cauchy stress (true stress).
 
@@ -304,8 +373,8 @@ def stress_Cauchy(P: _np.ndarray,
     return _tensor.symmetric(_np.einsum('...,...ij,...kj',1.0/_np.linalg.det(F),P,F))
 
 
-def stress_second_Piola_Kirchhoff(P: _np.ndarray,
-                                  F: _np.ndarray) -> _np.ndarray:
+def stress_second_Piola_Kirchhoff(P: _npt.NDArray[_np.floating],
+                                  F: _npt.NDArray[_np.floating]) -> _npt.NDArray[_np.floating]:
     r"""
     Calculate the second Piola-Kirchhoff stress.
 
@@ -346,10 +415,10 @@ def stress_second_Piola_Kirchhoff(P: _np.ndarray,
     Cambridge University Press, 2008
     https://doi.org/10.1017/CBO9780511755446
     """
-    return _tensor.symmetric(_np.einsum('...ij,...jk',_np.linalg.inv(F),P))
+    return _tensor.symmetric(_np.matmul(_np.linalg.inv(F),P))
 
 
-def stretch_left(T: _np.ndarray) -> _np.ndarray:
+def stretch_left(T: _npt.NDArray[_np.floating]) -> _npt.NDArray[_np.floating]:
     r"""
     Calculate left stretch of a tensor.
 
@@ -381,7 +450,7 @@ def stretch_left(T: _np.ndarray) -> _np.ndarray:
     return _polar_decomposition(T,'V')[0]
 
 
-def stretch_right(T: _np.ndarray) -> _np.ndarray:
+def stretch_right(T: _npt.NDArray[_np.floating]) -> _npt.NDArray[_np.floating]:
     r"""
     Calculate right stretch of a tensor.
 
@@ -413,7 +482,7 @@ def stretch_right(T: _np.ndarray) -> _np.ndarray:
     return _polar_decomposition(T,'U')[0]
 
 
-def _polar_decomposition(T: _np.ndarray,
+def _polar_decomposition(T: _npt.NDArray[_np.floating],
                          requested: _Union[str, _Sequence[str]]) -> tuple:
     """
     Perform singular value decomposition.
@@ -438,9 +507,9 @@ def _polar_decomposition(T: _np.ndarray,
     if 'R' in requested:
         output+=[R]
     if 'V' in requested:
-        output+=[_np.einsum('...ij,...kj',T,R)]
+        output+=[_np.matmul(T,_tensor.transpose(R))]
     if 'U' in requested:
-        output+=[_np.einsum('...ji,...jk',R,T)]
+        output+=[_np.matmul(_tensor.transpose(R),T)]
 
     if len(output) == 0 or len(set(['V','R','U']).union(requested))> 3:
         raise ValueError(f'requested invalid dataset {requested}')
@@ -448,8 +517,8 @@ def _polar_decomposition(T: _np.ndarray,
     return tuple(output)
 
 
-def _equivalent_Mises(T_sym: _np.ndarray,
-                      s: float) -> _np.ndarray:
+def _equivalent_Mises(T_sym: _npt.NDArray[_np.floating],
+                      s: float) -> _npt.NDArray[_np.floating]:
     """
     Base equation for Mises equivalent of a stress or strain tensor.
 
@@ -465,5 +534,5 @@ def _equivalent_Mises(T_sym: _np.ndarray,
     eq : numpy.ndarray, shape (...)
         Scaled second invariant of the deviatoric part of T_sym.
     """
-    d = _tensor.deviatoric(T_sym)
+    d = _tensor.traceless(T_sym)
     return _np.sqrt(s*_np.sum(d**2.0,axis=(-1,-2)))

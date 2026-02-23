@@ -5,6 +5,8 @@ Detailed instructions for each step are documented in the [wiki](https://git.dam
 1. [ ] Update repository
 1. [ ] Create and upload tarball
 1. [ ] Create GitLab release
+1. [ ] Create GitHub release
+1. [ ] Fix Zenodo release
 1. [ ] Update examples repository
 1. [ ] Update website
 1. Packages
@@ -14,6 +16,7 @@ Detailed instructions for each step are documented in the [wiki](https://git.dam
    - [ ] Arch Linux (PKGBUILD)
    - [ ] Ubuntu (Launchpad)
    - [ ] Flatpak (Flathub)
+   - [ ] Homebrew
    - Open build service
      - [ ] Debian
      - [ ] Fedora/Suse

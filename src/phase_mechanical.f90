@@ -1,3 +1,4 @@
+! SPDX-License-Identifier: AGPL-3.0-or-later
 !----------------------------------------------------------------------------------------------------
 !> @brief internal microstructure state for all plasticity constitutive models
 !----------------------------------------------------------------------------------------------------
@@ -209,24 +210,24 @@ module subroutine mechanical_init(phases, num_mech)
   print'(/,1x,a)', '<<<+-  phase:mechanical init  -+>>>'
 
 !-------------------------------------------------------------------------------------------------
-  allocate(output_mechanical(phases%length))
+  allocate(output_mechanical(size(phases)))
 
-  allocate(phase_mechanical_Fe(phases%length))
-  allocate(phase_mechanical_Fi(phases%length))
-  allocate(phase_mechanical_Fi0(phases%length))
-  allocate(phase_mechanical_Fp(phases%length))
-  allocate(phase_mechanical_Fp0(phases%length))
-  allocate(phase_mechanical_F(phases%length))
-  allocate(phase_mechanical_F0(phases%length))
-  allocate(phase_mechanical_Li(phases%length))
-  allocate(phase_mechanical_Li0(phases%length))
-  allocate(phase_mechanical_Lp(phases%length))
-  allocate(phase_mechanical_Lp0(phases%length))
-  allocate(phase_mechanical_S(phases%length))
-  allocate(phase_mechanical_P(phases%length))
-  allocate(phase_mechanical_S0(phases%length))
+  allocate(phase_mechanical_Fe(size(phases)))
+  allocate(phase_mechanical_Fi(size(phases)))
+  allocate(phase_mechanical_Fi0(size(phases)))
+  allocate(phase_mechanical_Fp(size(phases)))
+  allocate(phase_mechanical_Fp0(size(phases)))
+  allocate(phase_mechanical_F(size(phases)))
+  allocate(phase_mechanical_F0(size(phases)))
+  allocate(phase_mechanical_Li(size(phases)))
+  allocate(phase_mechanical_Li0(size(phases)))
+  allocate(phase_mechanical_Lp(size(phases)))
+  allocate(phase_mechanical_Lp0(size(phases)))
+  allocate(phase_mechanical_S(size(phases)))
+  allocate(phase_mechanical_P(size(phases)))
+  allocate(phase_mechanical_S0(size(phases)))
 
-  do ph = 1, phases%length
+  do ph = 1, size(phases)
     Nmembers = count(material_ID_phase == ph)
 
     allocate(phase_mechanical_Fe(ph)%data(3,3,Nmembers))
@@ -263,7 +264,7 @@ module subroutine mechanical_init(phases, num_mech)
     end do
   end do
 
-  do ph = 1, phases%length
+  do ph = 1, size(phases)
     phase_mechanical_F0(ph)%data  = phase_mechanical_F(ph)%data
     phase_mechanical_Fp0(ph)%data = phase_mechanical_Fp(ph)%data
     phase_mechanical_Fi0(ph)%data = phase_mechanical_Fi(ph)%data
@@ -271,10 +272,10 @@ module subroutine mechanical_init(phases, num_mech)
 
 
   call elastic_init(phases)
-  allocate(plasticState(phases%length))
-  allocate(mechanical_plasticity_type(phases%length),source = UNDEFINED)
+  allocate(plasticState(size(phases)))
+  allocate(mechanical_plasticity_type(size(phases)),source = UNDEFINED)
   call plastic_init()
-  do ph = 1,phases%length
+  do ph = 1,size(phases)
     plasticState(ph)%state0 = plasticState(ph)%state
   end do
   call eigen_init(phases)
@@ -1182,8 +1183,8 @@ module function phase_mechanical_dPdF(Delta_t,co,ce) result(dPdF)
     end do; end do
     call math_invert(temp_99,error,math_3333to99(lhs_3333))
     if (error) then
-      call IO_warning(600,'inversion error in analytic tangent calculation', &
-                      label1='phase',ID1=ph,label2='entry',ID2=en)
+      call IO_warning(600,'matrix inversion during analytic tangent calculation', IO_EOL, &
+                          'at entry', en, 'of phase', ph, 'on MPI rank', worldrank, emph = [4,6,8])
       dFidS = 0.0_pREAL
     else
       dFidS = math_mul3333xx3333(math_99to3333(temp_99),rhs_3333)
@@ -1212,8 +1213,8 @@ module function phase_mechanical_dPdF(Delta_t,co,ce) result(dPdF)
 
   call math_invert(temp_99,error,math_eye(9)+math_3333to99(lhs_3333))
   if (error) then
-    call IO_warning(600,'inversion error in analytic tangent calculation', &
-                    label1='phase',ID1=ph,label2='entry',ID2=en)
+    call IO_warning(600,'matrix inversion during analytic tangent calculation', IO_EOL, &
+                        'at entry', en, 'of phase', ph, 'on MPI rank', worldrank, emph = [4,6,8])
     dSdF = rhs_3333
   else
     dSdF = math_mul3333xx3333(math_99to3333(temp_99),rhs_3333)

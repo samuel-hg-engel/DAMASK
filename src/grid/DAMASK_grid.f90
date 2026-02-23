@@ -1,3 +1,4 @@
+! SPDX-License-Identifier: AGPL-3.0-or-later
 !--------------------------------------------------------------------------------------------------
 !> @author Pratheek Shanthraj, Max-Planck-Institut für Eisenforschung GmbH
 !> @author Martin Diehl, Max-Planck-Institut für Eisenforschung GmbH
@@ -6,8 +7,8 @@
 !> @details doing cutbacking, forwarding in case of restart, reporting statistics, writing
 !> results
 !--------------------------------------------------------------------------------------------------
-program DAMASK_grid
 #include <petsc/finclude/petscsys.h>
+program DAMASK_grid
   use PETScSys
 #ifndef PETSC_HAVE_MPI_F90MODULE_VISIBILITY
   use MPI_f08
@@ -29,6 +30,7 @@ program DAMASK_grid
   use grid_mech_spectral_polarization
   use grid_mechanical_spectral_Galerkin
   use grid_mechanical_FEM
+  use grid_chemical_FDM
   use grid_damage_spectral
   use grid_thermal_spectral
   use result
@@ -57,7 +59,8 @@ program DAMASK_grid
     FIELD_UNDEFINED_ID, &
     FIELD_MECH_ID, &
     FIELD_THERMAL_ID, &
-    FIELD_DAMAGE_ID
+    FIELD_DAMAGE_ID, &
+    FIELD_CHEMICAL_ID
   end enum
 
   integer(kind(FIELD_UNDEFINED_ID)), allocatable :: ID(:)
@@ -90,7 +93,7 @@ program DAMASK_grid
     nActiveFields = 0, &
     maxCutBack, &                                                                                   !< max number of cut backs
     stagItMax                                                                                       !< max number of field level staggered iterations
-  logical :: active_Gamma = .false., active_G = .false., active_parabolic = .false.
+  logical :: active_Gamma = .false., active_G = .false., active_parabolic = .false., exists
   integer(MPI_INTEGER_KIND) :: err_MPI
   character(len=pSTRLEN) :: &
     incInfo
@@ -108,8 +111,6 @@ program DAMASK_grid
   procedure(grid_mechanical_spectral_basic_restartWrite), pointer :: &
     grid_mechanical_restartWrite
 
-  external :: &
-    quit
   type(tDict), pointer :: &
     load, &
     num_solver, &
@@ -127,7 +128,7 @@ program DAMASK_grid
   print'(/,1x,a)', '<<<+-  DAMASK_grid init  -+>>>'; flush(IO_STDOUT)
 
   print'(/,1x,a)', 'P. Shanthraj et al., Handbook of Mechanics of Materials, 2019'
-  print'(  1x,a)', 'https://doi.org/10.1007/978-981-10-6855-3_80'
+  print'(  1x,a)', 'https://doi.org/10.1007/978-981-10-6884-3_80'
 
 
 !-------------------------------------------------------------------------------------------------
@@ -193,7 +194,7 @@ program DAMASK_grid
       grid_mechanical_restartWrite => grid_mechanical_FEM_restartWrite
 
     case default
-      call IO_error(error_ID = 891, ext_msg = trim(solver%get_asStr('mechanical')))
+      call IO_error(601_pI16,trim(solver%get_asStr('mechanical')), 'is not a valid grid solver type', emph=[1])
 
   end select
 
@@ -201,6 +202,7 @@ program DAMASK_grid
 ! initialize field solver information
   if (solver%get_asStr('thermal',defaultVal = 'n/a') == 'spectral') nActiveFields = nActiveFields + 1
   if (solver%get_asStr('damage', defaultVal = 'n/a') == 'spectral') nActiveFields = nActiveFields + 1
+  if (solver%get_asStr('chemical', defaultVal = 'n/a') == 'FDM')    nActiveFields = nActiveFields + 1
 
   allocate(solres(nActiveFields))
   allocate(    ID(nActiveFields))
@@ -217,6 +219,11 @@ program DAMASK_grid
     ID(field) = FIELD_DAMAGE_ID
     active_parabolic = .true.
   end if damageActive
+  chemicalActive: if (solver%get_asStr('chemical',defaultVal = 'n/a') == 'FDM') then
+    field = field + 1
+    ID(field) = FIELD_CHEMICAL_ID
+    active_parabolic = .true.
+  end if chemicalActive
 
 !--------------------------------------------------------------------------------------------------
 ! doing initialization depending on active solvers
@@ -226,26 +233,30 @@ program DAMASK_grid
     select case (ID(field))
 
       case (FIELD_THERMAL_ID)
-        call grid_thermal_spectral_init(num_grid)
+        call grid_thermal_spectral_init(num_grid%get_dict('thermal',defaultVal=emptyDict))
 
       case (FIELD_DAMAGE_ID)
-        call grid_damage_spectral_init(num_grid)
+        call grid_damage_spectral_init(num_grid%get_dict('damage',defaultVal=emptyDict))
+
+      case (FIELD_CHEMICAL_ID)
+        call grid_chemical_FDM_init(num_grid%get_dict('chemical',defaultVal=emptyDict))
 
     end select
   end do
 
-  call grid_mechanical_init(num_grid)
+  call grid_mechanical_init(num_grid%get_dict('mechanical',defaultVal=emptyDict))
   call config_numerics_deallocate()
 
 !--------------------------------------------------------------------------------------------------
-! write header of output file
+! open/create statistics file
   if (worldrank == 0) then
-    writeHeader: if (CLI_restartInc < 1) then
-      open(newunit=statUnit,file=trim(getSolverJobName())//'.sta',form='FORMATTED',status='REPLACE')
-      write(statUnit,'(a)') 'Increment Time CutbackLevel Converged IterationsNeeded StagIterationsNeeded' ! statistics file
+    fname = trim(CLI_jobName)//'.sta'
+    inquire(file=fname,exist=exists)
+    writeHeader: if (CLI_restartInc < 1 .or. .not. exists) then
+      open(newunit=statUnit,file=fname,form='FORMATTED',status='REPLACE')
+      write(statUnit,'(a)') 'Increment Time CutbackLevel Converged IterationsNeeded StagIterationsNeeded'
     else writeHeader
-      open(newunit=statUnit,file=trim(getSolverJobName())//&
-                                  '.sta',form='FORMATTED', position='APPEND', status='OLD')
+      open(newunit=statUnit,file=fname,form='FORMATTED', position='APPEND', status='OLD')
     end if writeHeader
   end if
 
@@ -311,7 +322,8 @@ program DAMASK_grid
                         rotation_BC    = loadCases(l)%rot)
 
               case(FIELD_THERMAL_ID); call grid_thermal_spectral_forward(cutBack, Delta_t)
-              case(FIELD_DAMAGE_ID);  call grid_damage_spectral_forward(cutBack)
+              case(FIELD_DAMAGE_ID); call grid_damage_spectral_forward(cutBack)
+              case(FIELD_CHEMICAL_ID); call grid_chemical_FDM_forward(cutBack)
             end select
           end do
           if (.not. cutBack) call materialpoint_forward
@@ -331,6 +343,8 @@ program DAMASK_grid
                   solres(field) = grid_thermal_spectral_solution(Delta_t)
                 case(FIELD_DAMAGE_ID)
                   solres(field) = grid_damage_spectral_solution(Delta_t)
+                case(FIELD_CHEMICAL_ID)
+                  solres(field) = grid_chemical_FDM_solution(Delta_t)
               end select
 
               if (.not. solres(field)%converged) exit                                               ! no solution found
@@ -352,7 +366,7 @@ program DAMASK_grid
             guess = .true.                                                                          ! start guessing after first converged (sub)inc
             if (worldrank == 0) then
               write(statUnit,*) totalIncsCounter, t, cutBackLevel, &
-                                solres(1)%converged, solres(1)%iterationsNeeded, StagIter
+                                solres(1)%converged, solres(1)%iterationsNeeded, StagIter - 1
               flush(statUnit)
             end if
           elseif (cutBackLevel < maxCutBack) then                                                   ! further cutbacking tolerated?
@@ -377,7 +391,7 @@ program DAMASK_grid
           print'(/,1x,a,1x,i0,1x,a)', 'increment', totalIncsCounter, 'NOT converged'
         end if; flush(IO_STDOUT)
 
-        call MPI_Allreduce(signal_SIGUSR1,sig,1_MPI_INTEGER_KIND,MPI_LOGICAL,MPI_LOR,MPI_COMM_WORLD,err_MPI)
+        call MPI_Allreduce(logical(signal_SIGUSR1),sig,1_MPI_INTEGER_KIND,MPI_LOGICAL,MPI_LOR,MPI_COMM_WORLD,err_MPI)
         call parallelization_chkerr(err_MPI)
         if (mod(inc,loadCases(l)%f_out) == 0 .or. sig) then
           print'(/,1x,a)', '... saving results ........................................................'
@@ -385,10 +399,11 @@ program DAMASK_grid
           call materialpoint_result(totalIncsCounter,t)
         end if
         if (sig) call signal_setSIGUSR1(.false.)
-        call MPI_Allreduce(signal_SIGUSR2,sig,1_MPI_INTEGER_KIND,MPI_LOGICAL,MPI_LOR,MPI_COMM_WORLD,err_MPI)
+
+        call MPI_Allreduce(logical(signal_SIGUSR2),sig,1_MPI_INTEGER_KIND,MPI_LOGICAL,MPI_LOR,MPI_COMM_WORLD,err_MPI)
         call parallelization_chkerr(err_MPI)
         if (mod(inc,loadCases(l)%f_restart) == 0 .or. sig) then
-          fileHandle = HDF5_openFile(getSolverJobName()//'_restart.hdf5','w')
+          fileHandle = HDF5_openFile(CLI_jobName//'_restart.hdf5','w')
           call HDF5_addAttribute(fileHandle,'increment',totalIncsCounter)
           call HDF5_closeFile(fileHandle)
           do field = 1, nActiveFields
@@ -404,7 +419,8 @@ program DAMASK_grid
           call materialpoint_restartWrite()
         end if
         if (sig) call signal_setSIGUSR2(.false.)
-        call MPI_Allreduce(signal_SIGINT,sig,1_MPI_INTEGER_KIND,MPI_LOGICAL,MPI_LOR,MPI_COMM_WORLD,err_MPI)
+
+        call MPI_Allreduce(logical(signal_SIGINT),sig,1_MPI_INTEGER_KIND,MPI_LOGICAL,MPI_LOR,MPI_COMM_WORLD,err_MPI)
         call parallelization_chkerr(err_MPI)
         if (sig) exit loadCaseLooping
       end if skipping
@@ -457,40 +473,29 @@ function parseLoadsteps(load_steps) result(loadCases)
     step_bc, &
     step_mech, &
     step_discretization
-#ifdef __INTEL_LLVM_COMPILER
-  type(tList), pointer :: &
-    tensor
-#endif
 
 
-  allocate(loadCases(load_steps%length))
-  do l = 1, load_steps%length
+  allocate(loadCases(size(load_steps)))
+  do l = 1, size(load_steps)
     load_step => load_steps%get_dict(l)
     step_bc   => load_step%get_dict('boundary_conditions')
     step_mech => step_bc%get_dict('mechanical')
     loadCases(l)%stress%myType=''
-    readMech: do m = 1, step_mech%length
+    readMech: do m = 1, size(step_mech)
       select case (step_mech%key(m))
-        case ('L','dot_F','F')                                                                      ! assign values for the deformation BC matrix
+        case ('L','dot_F','F_dot','F')                                                              ! assign values for the deformation BC matrix
           loadCases(l)%deformation%myType = step_mech%key(m)
-#ifdef __INTEL_LLVM_COMPILER
-          tensor => step_mech%get_list(m)
-          call getMaskedTensor(loadCases(l)%deformation%values,loadCases(l)%deformation%mask,tensor)
-#else
+          if (loadCases(l)%deformation%myType == 'F_dot') loadCases(l)%deformation%myType = 'dot_F'
           call getMaskedTensor(loadCases(l)%deformation%values,loadCases(l)%deformation%mask,step_mech%get_list(m))
-#endif
-        case ('dot_P','P')
+        case ('dot_P','P','P_dot')
           loadCases(l)%stress%myType = step_mech%key(m)
-#ifdef __INTEL_LLVM_COMPILER
-          tensor => step_mech%get_list(m)
-          call getMaskedTensor(loadCases(l)%stress%values,loadCases(l)%stress%mask,tensor)
-#else
+          if (loadCases(l)%stress%myType == 'P_dot') loadCases(l)%stress%myType = 'dot_P'
           call getMaskedTensor(loadCases(l)%stress%values,loadCases(l)%stress%mask,step_mech%get_list(m))
-#endif
       end select
       call loadCases(l)%rot%fromAxisAngle(step_mech%get_as1dReal('R',defaultVal = real([0.0,0.0,1.0,0.0],pREAL)),degrees=.true.)
     end do readMech
-    if (.not. allocated(loadCases(l)%deformation%myType)) call IO_error(error_ID=837,ext_msg = 'L/dot_F/F missing')
+    if (.not. allocated(loadCases(l)%deformation%myType)) &
+      call IO_error(error_ID=837,ext_msg = 'L, F_dot/dot_F, or F missing')
 
     step_discretization => load_step%get_dict('discretization')
     loadCases(l)%t = step_discretization%get_asReal('t')

@@ -1,11 +1,12 @@
+! SPDX-License-Identifier: AGPL-3.0-or-later
 !--------------------------------------------------------------------------------------------------
 !> @author Franz Roters, Max-Planck-Institut für Eisenforschung GmbH
 !> @author Philip Eisenlohr, Max-Planck-Institut für Eisenforschung GmbH
 !> @author Martin Diehl, Max-Planck-Institut für Eisenforschung GmbH
 !> @brief Parse geometry file to set up discretization and geometry for nonlocal model
 !--------------------------------------------------------------------------------------------------
-module discretization_grid
 #include <petsc/finclude/petscsys.h>
+module discretization_grid
   use PETScSys
 #ifndef PETSC_HAVE_MPI_F90MODULE_VISIBILITY
   use MPI_f08
@@ -14,7 +15,6 @@ module discretization_grid
 
   use prec
   use parallelization
-  use system_routines
   use VTI
   use CLI
   use IO
@@ -45,7 +45,8 @@ module discretization_grid
 
   public :: &
     discretization_grid_init, &
-    discretization_grid_getInitialCondition
+    discretization_grid_getScalarInitialCondition, &
+    discretization_grid_getVectorInitialCondition
 
 contains
 
@@ -53,9 +54,7 @@ contains
 !--------------------------------------------------------------------------------------------------
 !> @brief Read the geometry file to obtain information on discretization.
 !--------------------------------------------------------------------------------------------------
-subroutine discretization_grid_init(restart)
-
-  logical, intent(in) :: restart
+subroutine discretization_grid_init()
 
   real(pREAL), dimension(3) :: &
     mySize, &                                                                                       !< domain size of this process
@@ -67,7 +66,8 @@ subroutine discretization_grid_init(restart)
     materialAt, materialAt_global
 
   integer :: &
-    j
+    j, &
+    n_labels                                                                                         !< number cell datasets in VTI file
   integer(MPI_INTEGER_KIND) :: err_MPI
   integer(C_INTPTR_T) :: &
     devNull, cells3_, cells3Offset_
@@ -75,6 +75,8 @@ subroutine discretization_grid_init(restart)
     displs, sendcounts
   character(len=:), allocatable :: &
     fileContent, fname
+  character(len=pSTRLEN), dimension(:), allocatable :: &
+    labels                                                                                           !< cell data labels in VTI file
   integer(HID_T) :: handle
 
 
@@ -83,12 +85,13 @@ subroutine discretization_grid_init(restart)
 
   if (worldrank == 0) then
     fileContent = IO_read(CLI_geomFile)
-    call VTI_readCellsSizeOrigin(cells,geomSize,origin,fileContent)
+    call VTI_readGeometry(cells,geomSize,origin,labels,fileContent)
+    n_labels = size(labels)
     materialAt_global = VTI_readDataset_int(fileContent,'material') + 1
     if (any(materialAt_global < 1)) &
-      call IO_error(180,ext_msg='material ID < 1')
+      call IO_error(180_pI16,'material ID < 1')
     if (size(materialAt_global) /= product(cells)) &
-      call IO_error(180,ext_msg='mismatch in # of material IDs and cells')
+      call IO_error(180_pI16,'mismatch in # of material IDs and cells')
     fname = CLI_geomFile
     if (scan(fname,'/') /= 0) fname = fname(scan(fname,'/',.true.)+1:)
     call result_openJobFile(parallel=.false.)
@@ -98,27 +101,37 @@ subroutine discretization_grid_init(restart)
     allocate(materialAt_global(0))                                                                  ! needed for IntelMPI
   end if
 
-
-  call MPI_Bcast(cells,3_MPI_INTEGER_KIND,MPI_INTEGER,0_MPI_INTEGER_KIND,MPI_COMM_WORLD, err_MPI)
+  call MPI_Bcast(cells,3_MPI_INTEGER_KIND,MPI_INTEGER,0_MPI_INTEGER_KIND,MPI_COMM_WORLD,err_MPI)
   call parallelization_chkerr(err_MPI)
-  if (cells(1) < 2) call IO_error(844, ext_msg='cells(1) must be larger than 1')
-  call MPI_Bcast(geomSize,3_MPI_INTEGER_KIND,MPI_DOUBLE,0_MPI_INTEGER_KIND,MPI_COMM_WORLD, err_MPI)
+  if (cells(1) < 2) call IO_error(844_pI16,'cells(1) must be larger than 1')
+  call MPI_Bcast(geomSize,3_MPI_INTEGER_KIND,MPI_DOUBLE,0_MPI_INTEGER_KIND,MPI_COMM_WORLD,err_MPI)
   call parallelization_chkerr(err_MPI)
-  call MPI_Bcast(origin,3_MPI_INTEGER_KIND,MPI_DOUBLE,0_MPI_INTEGER_KIND,MPI_COMM_WORLD, err_MPI)
+  call MPI_Bcast(origin,3_MPI_INTEGER_KIND,MPI_DOUBLE,0_MPI_INTEGER_KIND,MPI_COMM_WORLD,err_MPI)
+  call parallelization_chkerr(err_MPI)
+  call MPI_Bcast(n_labels,1_MPI_INTEGER_KIND,MPI_INTEGER,0_MPI_INTEGER_KIND,MPI_COMM_WORLD,err_MPI)
   call parallelization_chkerr(err_MPI)
 
-  print'(/,1x,a,i0,a,i0,a,i0)',            'cells:  ', cells(1),    ' × ', cells(2),    ' × ', cells(3)
-  print  '(1x,a,es8.2,a,es8.2,a,es8.2,a)', 'size:   ', geomSize(1), ' × ', geomSize(2), ' × ', geomSize(3), ' m³'
-  print  '(1x,a,es9.2,a,es9.2,a,es9.2,a)', 'origin: ', origin(1),   ' ',   origin(2),   ' ',   origin(3), ' m'
+  if (worldrank /= 0) allocate(character(len=pSTRLEN) :: labels(n_labels))
+  call MPI_Bcast(labels,int(pSTRLEN*n_labels,MPI_INTEGER_KIND),MPI_CHARACTER, &
+                 0_MPI_INTEGER_KIND,MPI_COMM_WORLD, err_MPI)
+  call parallelization_chkerr(err_MPI)
 
-  if (worldsize>cells(3)) call IO_error(894, ext_msg='number of processes exceeds cells(3)')
+  print'(/,1x,3(a,i0))',      'cells:   ', cells(1),    ' × ', cells(2),    ' × ', cells(3)
+  print'(  1x,3(a,es9.2),a)', 'size:   ',  geomSize(1), ' × ', geomSize(2), ' × ', geomSize(3), ' m³'
+  print'(  1x,3(a,es9.2),a)', 'origin: ',  origin(1),   '   ', origin(2),   '   ', origin(3),   ' m'
+  print'(/,1x,a)', 'cell data:'
+  do j = 1, n_labels
+    print '(2x,a,a)', '- ', trim(labels(j))
+  end do
+
+  if (worldsize>cells(3)) call IO_error(894_pI16,'number of processes exceeds cells(3)')
 
   call fftw_mpi_init()
   devNull = fftw_mpi_local_size_3d(int(cells(3),C_INTPTR_T),int(cells(2),C_INTPTR_T),int(cells(1)/2+1,C_INTPTR_T), &
                                    PETSC_COMM_WORLD, &
                                    cells3_, &                                                       ! domain cells size along z
                                    cells3Offset_)                                                   ! domain cells offset along z
-  if (cells3_==0_C_INTPTR_T) call IO_error(894, ext_msg='Cannot distribute MPI processes')
+  if (cells3_==0_C_INTPTR_T) call IO_error(894_pI16,'Cannot distribute MPI processes')
 
   cells3       = int(cells3_)
   cells3Offset = int(cells3Offset_)
@@ -148,19 +161,21 @@ subroutine discretization_grid_init(restart)
 
 !--------------------------------------------------------------------------------------------------
 ! store geometry information for post processing
-  if (.not. restart .and. worldrank == 0) then
+  if (worldrank == 0) then
     call result_openJobFile(parallel=.false.)
-    handle = result_addGroup('geometry')
-    call HDF5_write(cells,   handle,'cells', .false.)
-    call HDF5_write(geomSize,handle,'size',  .false.)
-    call HDF5_write(origin,  handle,'origin',.false.)
-    call HDF5_addAttribute(handle,'unit','1','cells')
-    call HDF5_addAttribute(handle,'unit','m³','size')
-    call HDF5_addAttribute(handle,'unit','m','origin')
-    call result_addAttribute('cells', cells,   '/geometry') ! legacy for DADF5 1.x
-    call result_addAttribute('size',  geomSize,'/geometry') ! legacy for DADF5 1.x
-    call result_addAttribute('origin',origin,  '/geometry') ! legacy for DADF5 1.x
-    call result_closeGroup(handle)
+    if (.not. result_objectExists('geometry')) then
+      handle = result_addGroup('geometry')
+      call HDF5_write(cells,   handle,'cells', .false.)
+      call HDF5_write(geomSize,handle,'size',  .false.)
+      call HDF5_write(origin,  handle,'origin',.false.)
+      call HDF5_addAttribute(handle,'unit','1','cells')
+      call HDF5_addAttribute(handle,'unit','m³','size')
+      call HDF5_addAttribute(handle,'unit','m','origin')
+      call result_addAttribute('cells', cells,   '/geometry') ! legacy for DADF5 1.x
+      call result_addAttribute('size',  geomSize,'/geometry') ! legacy for DADF5 1.x
+      call result_addAttribute('origin',origin,  '/geometry') ! legacy for DADF5 1.x
+      call result_closeGroup(handle)
+    end if
     call result_closeJobFile()
   end if
 
@@ -319,39 +334,79 @@ end function IPneighborhood
 
 
 !--------------------------------------------------------------------------------------------------
+!> @brief Read scalar initial condition from VTI file.
+!--------------------------------------------------------------------------------------------------
+function discretization_grid_getScalarInitialCondition(label) result(ic)
+
+  character(len=*), intent(in) :: label                                                              !< dataset label
+  real(pREAL), dimension(cells(1),cells(2),cells3) :: ic                                             !< scalar field of initial conditions
+
+
+  ic = reshape(get_initial_condition(label),[cells(1),cells(2),cells3])
+
+end function discretization_grid_getScalarInitialCondition
+
+
+!--------------------------------------------------------------------------------------------------
+!> @brief Read vector initial condition from VTI file.
+!--------------------------------------------------------------------------------------------------
+function discretization_grid_getVectorInitialCondition(label) result(ic)
+
+  character(len=*), intent(in) :: label                                                              !< dataset label
+  real(pREAL), dimension(:,:,:,:), allocatable :: ic                                                 !< vector field of initial conditions
+
+  real(pREAL), dimension(:), allocatable :: ic_flat
+  integer :: width
+
+
+  ic_flat = get_initial_condition(label)
+  width = size(ic_flat) / (product(cells(1:2))*cells3)
+  ic = reshape(ic_flat,[width,cells(1),cells(2),cells3])
+
+end function discretization_grid_getVectorInitialCondition
+
+
+!--------------------------------------------------------------------------------------------------
 !> @brief Read initial condition from VTI file.
 !--------------------------------------------------------------------------------------------------
-function discretization_grid_getInitialCondition(label) result(ic)
+function get_initial_condition(label) result(ic_local)
 
-  character(len=*), intent(in) :: label
-  real(pREAL), dimension(cells(1),cells(2),cells3) :: ic
+  character(len=*), intent(in) :: label                                                              !< dataset label
+  real(pREAL), dimension(:), allocatable :: ic_local                                                 !< flattened initial conditions
 
-  real(pREAL), dimension(:), allocatable :: ic_global, ic_local
+  real(pREAL), dimension(:), allocatable :: ic_global
   integer(MPI_INTEGER_KIND) :: err_MPI
   integer, dimension(worldsize) :: &
     displs, sendcounts
+  integer :: width
 
 
   if (worldrank == 0) then
     ic_global = VTI_readDataset_real(IO_read(CLI_geomFile),label)
+    width = size(ic_global) / product(cells)
   else
     allocate(ic_global(0))                                                                          ! needed for IntelMPI
   end if
 
-  call MPI_Gather(product(cells(1:2))*cells3Offset, 1_MPI_INTEGER_KIND,MPI_INTEGER,displs,&
-                  1_MPI_INTEGER_KIND,MPI_INTEGER,0_MPI_INTEGER_KIND,MPI_COMM_WORLD,err_MPI)
+  call MPI_Bcast(width,1_MPI_INTEGER_KIND,MPI_INTEGER,&
+                 0_MPI_INTEGER_KIND,MPI_COMM_WORLD,err_MPI)
   call parallelization_chkerr(err_MPI)
-  call MPI_Gather(product(cells(1:2))*cells3,      1_MPI_INTEGER_KIND,MPI_INTEGER,sendcounts,&
-                  1_MPI_INTEGER_KIND,MPI_INTEGER,0_MPI_INTEGER_KIND,MPI_COMM_WORLD,err_MPI)
+  call MPI_Gather(product(cells(1:2))*width*cells3Offset,1_MPI_INTEGER_KIND,MPI_INTEGER,&
+                  displs,1_MPI_INTEGER_KIND,MPI_INTEGER,&
+                  0_MPI_INTEGER_KIND,MPI_COMM_WORLD,err_MPI)
+  call parallelization_chkerr(err_MPI)
+  call MPI_Gather(product(cells(1:2))*width*cells3,1_MPI_INTEGER_KIND,MPI_INTEGER,&
+                  sendcounts,1_MPI_INTEGER_KIND,MPI_INTEGER,&
+                  0_MPI_INTEGER_KIND,MPI_COMM_WORLD,err_MPI)
   call parallelization_chkerr(err_MPI)
 
-  allocate(ic_local(product(cells(1:2))*cells3))
-  call MPI_Scatterv(ic_global,sendcounts,displs,MPI_DOUBLE,ic_local,size(ic_local),&
-                    MPI_DOUBLE,0_MPI_INTEGER_KIND,MPI_COMM_WORLD,err_MPI)
+  allocate(ic_local(product(cells(1:2))*cells3*width))
+  call MPI_Scatterv(ic_global,sendcounts,displs,MPI_DOUBLE,&
+                    ic_local,size(ic_local),MPI_DOUBLE,&
+                    0_MPI_INTEGER_KIND,MPI_COMM_WORLD,err_MPI)
   call parallelization_chkerr(err_MPI)
 
-  ic = reshape(ic_local,[cells(1),cells(2),cells3])
+end function get_initial_condition
 
-end function discretization_grid_getInitialCondition
 
 end module discretization_grid

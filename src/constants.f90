@@ -1,3 +1,4 @@
+! SPDX-License-Identifier: AGPL-3.0-or-later
 !--------------------------------------------------------------------------------------------------
 !> @author Martin Diehl, KU Leuven
 !> @brief Constants.
@@ -34,7 +35,8 @@ module constants
     STATUS_FAIL_PHASE_DAMAGE_STATE, &
     STATUS_FAIL_PHASE_DAMAGE_DELTASTATE, &
     STATUS_FAIL_PHASE_THERMAL, &
-    STATUS_FAIL_PHASE_THERMAL_DOTSTATE
+    STATUS_FAIL_PHASE_THERMAL_DOTSTATE, &
+    STATUS_FAIL_PHASE_CHEMICAL
   end enum
 
 end module constants

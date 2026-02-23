@@ -1,7 +1,11 @@
+! SPDX-License-Identifier: AGPL-3.0-or-later
 !--------------------------------------------------------------------------------------------------
 !> @author Martin Diehl, Max-Planck-Institut für Eisenforschung GmbH
 !> @brief Inquires variables related to parallelization (openMP, MPI)
 !--------------------------------------------------------------------------------------------------
+#ifdef PETSC
+#include <petsc/finclude/petscsys.h>
+#endif
 module parallelization
   use, intrinsic :: ISO_fortran_env, only: &
     OUTPUT_UNIT, &
@@ -10,7 +14,6 @@ module parallelization
   use constants
 
 #ifdef PETSC
-#include <petsc/finclude/petscsys.h>
   use PETScSys
 #ifndef PETSC_HAVE_MPI_F90MODULE_VISIBILITY
   use MPI_f08
@@ -59,13 +62,15 @@ contains
 subroutine parallelization_init()
 
   integer(MPI_INTEGER_KIND) :: err_MPI, typeSize, version, subversion, devNull
-  character(len=4) :: rank_str
+  character(len=4) :: rank_str, logfile
   character(len=MPI_MAX_LIBRARY_VERSION_STRING) :: MPI_library_version
-!$ integer :: got_env, threadLevel
+  integer :: got_env
+!$ integer :: threadLevel
 !$ integer(pI32) :: OMP_NUM_THREADS
 !$ character(len=6) NumThreadsString
   PetscErrorCode :: err_PETSc
   integer(kind(STATUS_OK)) :: status
+  integer, dimension(8) :: date_time
 
 
 #ifdef _OPENMP
@@ -81,13 +86,6 @@ subroutine parallelization_init()
   call PetscInitializeNoArguments(err_PETSc)
   CHKERRQ(err_PETSc)
 
-#if defined(DEBUG)
-  call PetscSetFPTrap(PETSC_FP_TRAP_ON,err_PETSc)
-#else
-  call PetscSetFPTrap(PETSC_FP_TRAP_OFF,err_PETSc)
-#endif
-  CHKERRQ(err_PETSc)
-
   call PetscOptionsClear(PETSC_NULL_OPTIONS,err_PETSc)
   CHKERRQ(err_PETSc)
 
@@ -95,18 +93,19 @@ subroutine parallelization_init()
   if (err_MPI /= 0_MPI_INTEGER_KIND) &
     error stop 'Could not determine worldrank'
 
-#ifdef LOGFILE
-  write(rank_str,'(i4.4)') worldrank
-  open(OUTPUT_UNIT,file='out.'//rank_str,status='replace',encoding='UTF-8')
-  open(ERROR_UNIT,file='err.'//rank_str,status='replace',encoding='UTF-8')
-#else
-  if (worldrank /= 0) then
-    close(OUTPUT_UNIT)                                                                              ! disable output
-    open(OUTPUT_UNIT,file='/dev/null',status='replace')                                             ! close() alone will leave some temp files in cwd
+  call get_environment_variable(name='DAMASK_LOGFILE',value=logfile,status=got_env)
+  if (got_env == 0 .and. any(trim(logfile) == ['1   ', 'TRUE', 'True', 'true'])) then
+    write(rank_str,'(i4.4)') worldrank
+    open(OUTPUT_UNIT,file='out.'//rank_str,status='replace')
+    open(ERROR_UNIT,file='err.'//rank_str,status='replace')
   else
-    open(OUTPUT_UNIT,encoding='UTF-8')                                                              ! for special characters in output
+    if (worldrank /= 0) open(OUTPUT_UNIT,file='/dev/null',status='replace')
   end if
-#endif
+
+  call date_and_time(values = date_time)
+  write(OUTPUT_UNIT,'(/,a)') ' DAMASK started on:'
+  print'(3x,a,1x,2(i2.2,a),i4.4)', 'Date:',date_time(3),'/',date_time(2),'/',date_time(1)
+  print'(3x,a,1x,2(i2.2,a),i2.2)', 'Time:',date_time(5),':',date_time(6),':',date_time(7)
 
   print'(/,1x,a)', '<<<+-  parallelization init  -+>>>'
 
@@ -114,13 +113,14 @@ subroutine parallelization_init()
   print'(/,1x,a)', trim(MPI_library_version)
   call MPI_Get_version(version,subversion,err_MPI)
   print'(1x,a,i0,a,i0)', 'MPI standard: ',version,'.',subversion
-#ifdef _OPENMP
+#if defined(_OPENMP) && (__INTEL_COMPILER < 20250200)
   print'(1x,a,i0)',      'OpenMP version: ',openmp_version
 #endif
 
   call MPI_Comm_size(MPI_COMM_WORLD,worldsize,err_MPI)
   call parallelization_chkerr(err_MPI)
-  if (worldrank == 0) print'(/,1x,a,i0)', 'MPI processes: ',worldsize
+  print'(/,1x,a,i0)', 'MPI worldrank: ',worldrank
+  print'(1x,a,i0)',   'MPI worldsize: ',worldsize
 
   call MPI_Type_size(MPI_INTEGER,typeSize,err_MPI)
   call parallelization_chkerr(err_MPI)
@@ -142,8 +142,7 @@ subroutine parallelization_init()
   if (typeSize*8_MPI_INTEGER_KIND /= int(bit_size(status),MPI_INTEGER_KIND)) &
     error stop 'Mismatch between MPI_INTEGER and DAMASK status'
 
-
-!$ call get_environment_variable(name='OMP_NUM_THREADS',value=NumThreadsString,STATUS=got_env)
+!$ call get_environment_variable(name='OMP_NUM_THREADS',value=NumThreadsString,status=got_env)
 !$ if (got_env /= 0) then
 !$   print'(1x,a)', 'Could not get $OMP_NUM_THREADS, using default'
 !$   OMP_NUM_THREADS = 4_pI32
