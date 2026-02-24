@@ -12,14 +12,12 @@ submodule(phase:plastic) dislobasic
   type :: tParameters
     real(pREAL),               allocatable, dimension(:) :: &
       b_sl, &                                                                                       !< magnitude of Burgers vector (m)
-      delta_F, &                                                                                    !< activation energy for glide (J)
-      k_1, &                                                                                        !< Dislocation multiplication
-      alpha_n, &                                                                                    !< Slip-system interaction strength
-      tau_0, &                                                                                      !< Intrinsic strength
-      k_2, &                                                                                        !< Dislocation annhilation
-      nu_g, &                                                                                       !< Dislocation jump frequency
-      delta_V, &                                                                                    !< Dislocation activation volume
-      rho_mob_0                                                                                     !< Mobile Dislocation Density
+      k_1, &                                                                                        !< dislocation multiplication
+      k_2, &                                                                                        !< dislocation annhilation factor
+      alpha_n, &                                                                                    !< slip-system interaction strength
+      tau_0, &                                                                                      !< intrinsic strength
+      A &                                                                                           !< dislocation activation energy factor
+      B                                                                                             !< dislocation activation volume factor
     real(pREAL),               allocatable, dimension(:,:) :: &
       forestProjection
     real(pREAL),               allocatable, dimension(:,:,:) :: &
@@ -150,14 +148,12 @@ module function plastic_dislobasic_init() result(myPlasticity)
 #endif
 
       prm%b_sl      = math_expand(pl%get_as1dReal('b_sl',      requiredSize=size(N_sl)),N_sl)
-      prm%delta_F   = math_expand(pl%get_as1dReal('delta_F',   requiredSize=size(N_sl)),N_sl)
       prm%k_1       = math_expand(pl%get_as1dReal('k_1',       requiredSize=size(N_sl)),N_sl)
-      prm%tau_0     = math_expand(pl%get_as1dReal('tau_0',     requiredSize=size(N_sl)),N_sl)
       prm%k_2       = math_expand(pl%get_as1dReal('k_2',       requiredSize=size(N_sl)),N_sl)
+      prm%tau_0     = math_expand(pl%get_as1dReal('tau_0',     requiredSize=size(N_sl)),N_sl)
       prm%alpha_n   = math_expand(pl%get_as1dReal('alpha_n',   requiredSize=size(N_sl)),N_sl)
-      prm%nu_g      = math_expand(pl%get_as1dReal('nu_g',      requiredSize=size(N_sl)),N_sl)
-      prm%delta_V   = math_expand(pl%get_as1dReal('delta_V',   requiredSize=size(N_sl)),N_sl)
-      prm%rho_mob_0 = math_expand(pl%get_as1dReal('rho_mob_0', requiredSize=size(N_sl)),N_sl)
+      prm%A         = math_expand(pl%get_as1dReal('A',         requiredSize=size(N_sl)),N_sl)
+      prm%B         = math_expand(pl%get_as1dReal('B',         requiredSize=size(N_sl)),N_sl)
 
       prm%forestProjection = spread(          f_edge,1,prm%sum_N_sl) &
                            * crystal_forestProjection_edge (N_sl,phase_lattice(ph),phase_cOverA(ph)) &
@@ -166,26 +162,22 @@ module function plastic_dislobasic_init() result(myPlasticity)
 
       ! sanity checks
       if (any(rho_ssd_0         <  0.0_pREAL))         extmsg = trim(extmsg)//' rho_ssd_0'
-      if (any(prm%rho_mob_0     <  0.0_pREAL))         extmsg = trim(extmsg)//' rho_mob_0'
       if (any(prm%b_sl          <= 0.0_pREAL))         extmsg = trim(extmsg)//' b_sl'
-      if (any(prm%delta_F       <= 0.0_pREAL))         extmsg = trim(extmsg)//' delta_F'
       if (any(prm%k_1           <= 0.0_pREAL))         extmsg = trim(extmsg)//' k_1'
       if (any(prm%alpha_n       <= 0.0_pREAL))         extmsg = trim(extmsg)//' alpha_n'
       if (any(prm%k_2           <  0.0_pREAL))         extmsg = trim(extmsg)//' k_2'
-      if (any(prm%nu_g          <  0.0_pREAL))         extmsg = trim(extmsg)//' n_g'
-      if (any(prm%delta_V       <  0.0_pREAL))         extmsg = trim(extmsg)//' delta_V'
+      if (any(prm%A             <  0.0_pREAL))         extmsg = trim(extmsg)//' A'
+      if (any(prm%B             <  0.0_pREAL))         extmsg = trim(extmsg)//' B'
 
     else slipActive
       rho_ssd_0 = emptyRealArray
       allocate(prm%b_sl, &
-               prm%delta_F, &
-               prm%delta_V, &
                prm%k_1, &
                prm%tau_0, &
                prm%k_2, &
                prm%alpha_n, &
-               prm%nu_g, &
-               prm%rho_mob_0, &
+               prm%A, &
+               prm%B, &
                source=emptyRealArray)
       allocate(prm%forestProjection(0,0))
 
@@ -399,13 +391,9 @@ pure subroutine kinetics_sl(Mp,T,ph,en, &
 
     significantStress: where(tau_eff > tol_math_check)
 
-      v_g = prm%nu_g * prm%b_sl * exp(-1.0_pREAL*prm%delta_F/(K_B*T)) * sinh((tau_eff * prm%delta_V) /(K_B*T))
+      dot_gamma_sl = sign(A * sinh(tau_eff/B), tau)
 
-      dot_gamma_sl = sign(prm%rho_mob_0 * prm%b_sl * v_g, tau)
-
-      dv_g_dtau = prm%nu_g * prm%b_sl * exp(-1.0_pREAL*prm%delta_F/(K_B*T)) * cosh((tau_eff * prm%delta_V) /(K_B*T)) * prm%delta_V / (K_B*T)
-
-      ddot_gamma_dtau = prm%rho_mob_0 * prm%b_sl * dv_g_dtau
+      ddot_gamma_dtau = sign(A/B * cosh(tau_eff/B), tau)
 
     else where significantStress
       dot_gamma_sl    = 0.0_pREAL
