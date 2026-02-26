@@ -14,6 +14,7 @@ submodule(phase:plastic) dislobasic
       b_sl, &                                                                                       !< magnitude of Burgers vector (m)
       k_1, &                                                                                        !< dislocation multiplication
       k_2, &                                                                                        !< dislocation annhilation factor
+      delta_Q, &                                                                                    !< dislocation annhilation activation energy
       alpha_n, &                                                                                    !< slip-system interaction strength
       tau_0, &                                                                                      !< intrinsic strength
       A &                                                                                           !< dislocation activation energy factor
@@ -150,6 +151,7 @@ module function plastic_dislobasic_init() result(myPlasticity)
       prm%b_sl      = math_expand(pl%get_as1dReal('b_sl',      requiredSize=size(N_sl)),N_sl)
       prm%k_1       = math_expand(pl%get_as1dReal('k_1',       requiredSize=size(N_sl)),N_sl)
       prm%k_2       = math_expand(pl%get_as1dReal('k_2',       requiredSize=size(N_sl)),N_sl)
+      prm%delta_Q   = math_expand(pl%get_as1dReal('delta_Q',   requiredSize=size(N_sl)),N_sl)
       prm%tau_0     = math_expand(pl%get_as1dReal('tau_0',     requiredSize=size(N_sl)),N_sl)
       prm%alpha_n   = math_expand(pl%get_as1dReal('alpha_n',   requiredSize=size(N_sl)),N_sl)
       prm%A         = math_expand(pl%get_as1dReal('A',         requiredSize=size(N_sl)),N_sl)
@@ -166,6 +168,7 @@ module function plastic_dislobasic_init() result(myPlasticity)
       if (any(prm%k_1           <= 0.0_pREAL))         extmsg = trim(extmsg)//' k_1'
       if (any(prm%alpha_n       <= 0.0_pREAL))         extmsg = trim(extmsg)//' alpha_n'
       if (any(prm%k_2           <  0.0_pREAL))         extmsg = trim(extmsg)//' k_2'
+      if (any(prm%delta_Q       <  0.0_pREAL))         extmsg = trim(extmsg)//' delta_Q'
       if (any(prm%A             <  0.0_pREAL))         extmsg = trim(extmsg)//' A'
       if (any(prm%B             <  0.0_pREAL))         extmsg = trim(extmsg)//' B'
 
@@ -175,6 +178,7 @@ module function plastic_dislobasic_init() result(myPlasticity)
                prm%k_1, &
                prm%tau_0, &
                prm%k_2, &
+               prm%delta_Q, &
                prm%alpha_n, &
                prm%A, &
                prm%B, &
@@ -287,7 +291,7 @@ module function dislobasic_dotState(Mp,ph,en) result(dotState)
     abs_dot_gamma_sl = abs(dot_gamma_sl)
 
     dot_rho_ssd = abs_dot_gamma_sl * (prm%k_1 / prm%b_sl * sqrt(matmul(prm%forestProjection,stt%rho_ssd(:,en)))) &
-                - abs_dot_gamma_sl * (prm%k_2 * stt%rho_ssd(:,en))
+                - abs_dot_gamma_sl * (prm%k_2 * exp(-1.0_pREAL * prm%delta_Q/K_B/T) * stt%rho_ssd(:,en))
 
   end associate
 
