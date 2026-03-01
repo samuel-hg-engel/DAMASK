@@ -10,14 +10,16 @@
 submodule(phase:plastic) dislobasic
 
   type :: tParameters
+    real(pREAL) :: &
+      G_0                                                                                           !< isotropic shear modulus at 0K
     real(pREAL),               allocatable, dimension(:) :: &
       b_sl, &                                                                                       !< magnitude of Burgers vector (m)
-      k_1, &                                                                                        !< dislocation multiplication
+      k_1, &                                                                                        !< dislocation multiplication factor
       k_2, &                                                                                        !< dislocation annhilation factor
-      delta_Q, &                                                                                    !< dislocation annhilation activation energy
+      delta_Q, &                                                                                    !< dislocation annhilation energy
       alpha_n, &                                                                                    !< slip-system interaction strength
       tau_0, &                                                                                      !< intrinsic strength
-      A &                                                                                           !< dislocation activation energy factor
+      A, &                                                                                          !< dislocation activation energy factor
       B                                                                                             !< dislocation activation volume factor
     real(pREAL),               allocatable, dimension(:,:) :: &
       forestProjection
@@ -156,6 +158,7 @@ module function plastic_dislobasic_init() result(myPlasticity)
       prm%alpha_n   = math_expand(pl%get_as1dReal('alpha_n',   requiredSize=size(N_sl)),N_sl)
       prm%A         = math_expand(pl%get_as1dReal('A',         requiredSize=size(N_sl)),N_sl)
       prm%B         = math_expand(pl%get_as1dReal('B',         requiredSize=size(N_sl)),N_sl)
+      prm%G_0       = pl%get_asReal('Q_cl')
 
       prm%forestProjection = spread(          f_edge,1,prm%sum_N_sl) &
                            * crystal_forestProjection_edge (N_sl,phase_lattice(ph),phase_cOverA(ph)) &
@@ -171,6 +174,7 @@ module function plastic_dislobasic_init() result(myPlasticity)
       if (any(prm%delta_Q       <  0.0_pREAL))         extmsg = trim(extmsg)//' delta_Q'
       if (any(prm%A             <  0.0_pREAL))         extmsg = trim(extmsg)//' A'
       if (any(prm%B             <  0.0_pREAL))         extmsg = trim(extmsg)//' B'
+      if (    prm%G_0           <= 0.0_pREAL)          extmsg = trim(extmsg)//' G_0'
 
     else slipActive
       rho_ssd_0 = emptyRealArray
