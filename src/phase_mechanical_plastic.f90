@@ -32,6 +32,11 @@ submodule(phase:mechanical) plastic
         myPlasticity
     end function plastic_dislotungsten_init
 
+    module function plastic_dislobasic_init() result(myPlasticity)
+      logical, dimension(:), allocatable :: &
+        myPlasticity
+    end function plastic_dislobasic_init
+
     module function plastic_nonlocal_init()      result(myPlasticity)
       logical, dimension(:), allocatable :: &
         myPlasticity
@@ -109,6 +114,29 @@ submodule(phase:mechanical) plastic
         en
     end subroutine nonlocal_LpAndItsTangent
 
+    pure module subroutine dislobasic_LpAndItsTangent(Lp,dLp_dMp,Mp,ph,en)
+      real(pREAL), dimension(3,3),     intent(out) :: &
+        Lp
+      real(pREAL), dimension(3,3,3,3), intent(out) :: &
+        dLp_dMp
+      real(pREAL), dimension(3,3),     intent(in) :: &
+        Mp
+      integer,                         intent(in) :: &
+        ph, &
+        en
+    end subroutine dislobasic_LpAndItsTangent
+
+    module subroutine nonlocal_LpAndItsTangent(Lp,dLp_dMp,Mp,ph,en)
+      real(pREAL), dimension(3,3),     intent(out) :: &
+        Lp
+      real(pREAL), dimension(3,3,3,3), intent(out) :: &
+        dLp_dMp
+      real(pREAL), dimension(3,3),     intent(in) :: &
+        Mp                                                                                          !< Mandel stress
+      integer,                         intent(in) :: &
+        ph, &
+        en
+    end subroutine nonlocal_LpAndItsTangent
 
     module function isotropic_dotState(Mp,ph,en) result(dotState)
       real(pREAL), dimension(3,3),  intent(in) :: &
@@ -160,6 +188,16 @@ submodule(phase:mechanical) plastic
         dotState
     end function dislotungsten_dotState
 
+    module function dislobasic_dotState(Mp,ph,en) result(dotState)
+      real(pREAL), dimension(3,3),  intent(in) :: &
+        Mp                                                                                          !< Mandel stress
+      integer,                      intent(in) :: &
+        ph, &
+        en
+      real(pREAL), dimension(plasticState(ph)%sizeDotState) :: &
+        dotState
+    end function dislobasic_dotState
+
     module subroutine nonlocal_dotState(Mp,Delta_T,ph,en)
       real(pREAL), dimension(3,3), intent(in) :: &
         Mp                                                                                          !< MandelStress
@@ -181,6 +219,12 @@ submodule(phase:mechanical) plastic
         ph, &
         en
     end subroutine dislotungsten_dependentState
+
+    module subroutine dislobasic_dependentState(ph,en)
+      integer,       intent(in) :: &
+        ph, &
+        en
+    end subroutine dislobasic_dependentState
 
     module subroutine nonlocal_dependentState(ph,en)
       integer, intent(in) :: &
@@ -224,6 +268,7 @@ module subroutine plastic_init
   where(plastic_kinehardening_init())     mechanical_plasticity_type = MECHANICAL_PLASTICITY_KINEHARDENING
   where(plastic_dislotwin_init())         mechanical_plasticity_type = MECHANICAL_PLASTICITY_DISLOTWIN
   where(plastic_dislotungsten_init())     mechanical_plasticity_type = MECHANICAL_PLASTICITY_DISLOTUNGSTEN
+  where(plastic_dislobasic_init())     mechanical_plasticity_type = MECHANICAL_PLASTICITY_DISLOBASIC
   where(plastic_nonlocal_init())          mechanical_plasticity_type = MECHANICAL_PLASTICITY_NONLOCAL
 
   if (any(mechanical_plasticity_type == UNDEFINED)) call IO_error(201)
@@ -284,6 +329,9 @@ module subroutine plastic_LpAndItsTangents(Lp, dLp_dS, dLp_dFi, &
       case (MECHANICAL_PLASTICITY_DISLOTUNGSTEN) plasticType
         call dislotungsten_LpAndItsTangent(Lp,dLp_dMp,Mp,ph,en)
 
+      case (MECHANICAL_PLASTICITY_DISLOBASIC) plasticType
+        call dislobasic_LpAndItsTangent(Lp,dLp_dMp,Mp,ph,en)
+
     end select plasticType
 
     do i=1,3; do j=1,3
@@ -334,6 +382,9 @@ module function plastic_dotState(subdt,ph,en) result(dotState)
       case (MECHANICAL_PLASTICITY_DISLOTUNGSTEN) plasticType
         dotState = dislotungsten_dotState(Mp,ph,en)
 
+      case (MECHANICAL_PLASTICITY_DISLOBASIC) plasticType
+        dotState = dislobasic_dotState(Mp,ph,en)
+
       case (MECHANICAL_PLASTICITY_NONLOCAL) plasticType
         call nonlocal_dotState(Mp,subdt,ph,en)
         dotState = plasticState(ph)%dotState(:,en)
@@ -361,6 +412,9 @@ module subroutine plastic_dependentState(ph,en)
 
     case (MECHANICAL_PLASTICITY_DISLOTUNGSTEN) plasticType
       call dislotungsten_dependentState(ph,en)
+
+    case (MECHANICAL_PLASTICITY_DISLOBASIC) plasticType
+      call dislobasic_dependentState(ph,en)      
 
     case (MECHANICAL_PLASTICITY_NONLOCAL) plasticType
       call nonlocal_dependentState(ph,en)

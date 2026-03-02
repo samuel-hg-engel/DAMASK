@@ -136,6 +136,11 @@ submodule(phase) mechanical
       character(len=*), intent(in) :: group
     end subroutine plastic_dislotungsten_result
 
+    module subroutine plastic_dislobasic_result(ph,group)
+      integer,          intent(in) :: ph
+      character(len=*), intent(in) :: group
+    end subroutine plastic_dislobasic_result
+
     module subroutine plastic_nonlocal_result(ph,group)
       integer,          intent(in) :: ph
       character(len=*), intent(in) :: group
@@ -363,6 +368,9 @@ module subroutine mechanical_result(group,ph)
 
     case(MECHANICAL_PLASTICITY_DISLOTUNGSTEN)
       call plastic_dislotungsten_result(ph,group//'mechanical/')
+
+    case(MECHANICAL_PLASTICITY_DISLOBASIC)
+      call plastic_dislobasic_result(ph,group//'mechanical/')
 
     case(MECHANICAL_PLASTICITY_NONLOCAL)
       call plastic_nonlocal_result(ph,group//'mechanical/')
