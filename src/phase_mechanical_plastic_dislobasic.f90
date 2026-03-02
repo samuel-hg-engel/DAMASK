@@ -296,10 +296,10 @@ module function dislobasic_dotState(Mp,ph,en) result(dotState)
     call kinetics_sl(Mp,T,ph,en,dot_gamma_sl)
     abs_dot_gamma_sl = abs(dot_gamma_sl)
 
-    k_1_T = ((mu / G_0)**2.0_pREAL) / (prm%alpha_n * 100.0_pReal)
+    k_1_T = ((mu / G_0)**2.0_pREAL) / (prm%alpha_n**2 * 100.0_pReal)
     k_2_T = prm%k_2 * exp(-1.0_pREAL * prm%delta_Q/K_B/T)
 
-    dot_rho_ssd = abs_dot_gamma_sl * (k_1_T/ prm%b_sl * sqrt(matmul(prm%forestProjection,stt%rho_ssd(:,en)))) &
+    dot_rho_ssd = abs_dot_gamma_sl * (k_1_T / prm%b_sl * alpha_n * sqrt(matmul(prm%forestProjection,stt%rho_ssd(:,en)))) &
                 - abs_dot_gamma_sl * (k_2_T * stt%rho_ssd(:,en))
 
   end associate
@@ -406,7 +406,7 @@ pure subroutine kinetics_sl(Mp,T,ph,en, &
 
       dot_gamma_sl = sign(A * sinh(B*tau_eff), tau)
 
-      ddot_gamma_dtau = A * B * cosh(tau_eff/B)
+      ddot_gamma_dtau = A * B * cosh(B*tau_eff)
 
     else where significantStress
       dot_gamma_sl    = 0.0_pREAL
