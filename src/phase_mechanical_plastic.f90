@@ -256,7 +256,7 @@ module subroutine plastic_init
   where(plastic_kinehardening_init())     mechanical_plasticity_type = MECHANICAL_PLASTICITY_KINEHARDENING
   where(plastic_dislotwin_init())         mechanical_plasticity_type = MECHANICAL_PLASTICITY_DISLOTWIN
   where(plastic_dislotungsten_init())     mechanical_plasticity_type = MECHANICAL_PLASTICITY_DISLOTUNGSTEN
-  where(plastic_dislobasic_init())     mechanical_plasticity_type = MECHANICAL_PLASTICITY_DISLOBASIC
+  where(plastic_dislobasic_init())        mechanical_plasticity_type = MECHANICAL_PLASTICITY_DISLOBASIC
   where(plastic_nonlocal_init())          mechanical_plasticity_type = MECHANICAL_PLASTICITY_NONLOCAL
 
   if (any(mechanical_plasticity_type == UNDEFINED)) call IO_error(201)

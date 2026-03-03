@@ -228,7 +228,7 @@ end function plastic_dislobasic_init
 !--------------------------------------------------------------------------------------------------
 !> @brief Calculate plastic velocity gradient and its tangent.
 !--------------------------------------------------------------------------------------------------
-module subroutine dislobasic_LpAndItsTangent(Lp,dLp_dMp,Mp,ph,en)
+pure module subroutine dislobasic_LpAndItsTangent(Lp,dLp_dMp,Mp,ph,en)
 
   real(pREAL), dimension(3,3),     intent(out) :: Lp
   real(pREAL), dimension(3,3,3,3), intent(out) :: dLp_dMp
@@ -255,7 +255,7 @@ module subroutine dislobasic_LpAndItsTangent(Lp,dLp_dMp,Mp,ph,en)
                          + ddot_gamma_dtau_sl(i) * prm%P_sl(k,l,i) * prm%P_sl(m,n,i)
     end do slipContribution
 
-    end associate
+  end associate
 
 end subroutine dislobasic_LpAndItsTangent
 
