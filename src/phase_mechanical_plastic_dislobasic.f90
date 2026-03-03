@@ -295,7 +295,7 @@ module function dislobasic_dotState(Mp,ph,en) result(dotState)
     k_1_T = ((mu / prm%G_0)**2.0_pREAL) / (prm%alpha_n**2 * 100.0_pReal)
     k_2_T = prm%k_2 * exp(-1.0_pREAL * prm%delta_Q/K_B/T)
 
-    dot_rho_ssd = abs_dot_gamma_sl * (k_1_T / prm%b_sl * alpha_n * sqrt(matmul(prm%forestProjection,stt%rho_ssd(:,en)))) &
+    dot_rho_ssd = abs_dot_gamma_sl * (k_1_T / prm%b_sl * prm%alpha_n * sqrt(matmul(prm%forestProjection,stt%rho_ssd(:,en)))) &
                 - abs_dot_gamma_sl * (k_2_T * stt%rho_ssd(:,en))
 
 
