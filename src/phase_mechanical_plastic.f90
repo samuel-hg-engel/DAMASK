@@ -126,18 +126,6 @@ submodule(phase:mechanical) plastic
         en
     end subroutine dislobasic_LpAndItsTangent
 
-    module subroutine nonlocal_LpAndItsTangent(Lp,dLp_dMp,Mp,ph,en)
-      real(pREAL), dimension(3,3),     intent(out) :: &
-        Lp
-      real(pREAL), dimension(3,3,3,3), intent(out) :: &
-        dLp_dMp
-      real(pREAL), dimension(3,3),     intent(in) :: &
-        Mp                                                                                          !< Mandel stress
-      integer,                         intent(in) :: &
-        ph, &
-        en
-    end subroutine nonlocal_LpAndItsTangent
-
     module function isotropic_dotState(Mp,ph,en) result(dotState)
       real(pREAL), dimension(3,3),  intent(in) :: &
         Mp                                                                                          !< Mandel stress
