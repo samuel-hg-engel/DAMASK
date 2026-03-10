@@ -156,7 +156,7 @@ module function plastic_dislobasic_init() result(myPlasticity)
       prm%alpha_n   = math_expand(pl%get_as1dReal('alpha_n',   requiredSize=size(N_sl)),N_sl)
       prm%A         = math_expand(pl%get_as1dReal('A',         requiredSize=size(N_sl)),N_sl)
       prm%B         = math_expand(pl%get_as1dReal('B',         requiredSize=size(N_sl)),N_sl)
-      prm%G_0       = pl%get_asReal('Q_cl')
+      prm%G_0       = pl%get_asReal('G_0')
 
       prm%forestProjection = spread(          f_edge,1,prm%sum_N_sl) &
                            * crystal_forestProjection_edge (N_sl,phase_lattice(ph),phase_cOverA(ph)) &
