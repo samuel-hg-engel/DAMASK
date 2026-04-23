@@ -20,13 +20,19 @@ submodule(phase:plastic) dislobasic
       alpha_n, &                                                                                    !< slip-system interaction strength
       tau_0, &                                                                                      !< intrinsic strength
       A, &                                                                                          !< dislocation activation energy factor
-      B                                                                                             !< dislocation activation volume factor
+      B, &                                                                                          !< dislocation activation volume factor
+      rho_m, &
+      nu, &
+      delta_F, &
+      delta_V
     real(pREAL),               allocatable, dimension(:,:) :: &
       forestProjection
     real(pREAL),               allocatable, dimension(:,:,:) :: &
       P_sl
     integer :: &
       sum_N_sl                                                                                      !< total number of active slip systems
+    logical :: &
+      isothermal_flow  = .true.   
     character(len=:),          allocatable :: &
       isotropic_bound
     character(len=pSTRLEN),    allocatable, dimension(:) :: &
@@ -158,6 +164,11 @@ module function plastic_dislobasic_init() result(myPlasticity)
       prm%alpha_n   = math_expand(pl%get_as1dReal('alpha_n',   requiredSize=size(N_sl)),N_sl)
       prm%A         = math_expand(pl%get_as1dReal('A',         requiredSize=size(N_sl)),N_sl)
       prm%B         = math_expand(pl%get_as1dReal('B',         requiredSize=size(N_sl)),N_sl)
+      prm%rho_mob_0 = math_expand(pl%get_as1dReal('rho_mob_0', requiredSize=size(N_sl)),N_sl)
+      prm%nu        = math_expand(pl%get_as1dReal('nu',        requiredSize=size(N_sl)),N_sl)
+      prm%delta_F   = math_expand(pl%get_as1dReal('delta_F',   requiredSize=size(N_sl)),N_sl)
+      prm%delta_V   = math_expand(pl%get_as1dReal('delta_V',   requiredSize=size(N_sl)),N_sl)
+      prm%isothermal_flow    =    pl%get_asBool('isothermal_flow',  defaultVal=prm%isothermal_flow)
       prm%G_0       = pl%get_asReal('G_0')
 
       prm%forestProjection = spread(          f_edge,1,prm%sum_N_sl) &
@@ -169,11 +180,15 @@ module function plastic_dislobasic_init() result(myPlasticity)
       if (any(rho_ssd_0         <  0.0_pREAL))         extmsg = trim(extmsg)//' rho_ssd_0'
       if (any(prm%b_sl          <= 0.0_pREAL))         extmsg = trim(extmsg)//' b_sl'
       if (any(prm%alpha_n       <= 0.0_pREAL))         extmsg = trim(extmsg)//' alpha_n'
-      if (any(prm%k_1           <  0.0_pREAL))         extmsg = trim(extmsg)//' k_1'
-      if (any(prm%k_2           <  0.0_pREAL))         extmsg = trim(extmsg)//' k_2'
-      if (any(prm%delta_Q       <  0.0_pREAL))         extmsg = trim(extmsg)//' delta_Q'
-      if (any(prm%A             <  0.0_pREAL))         extmsg = trim(extmsg)//' A'
-      if (any(prm%B             <  0.0_pREAL))         extmsg = trim(extmsg)//' B'
+      if (any(prm%k_1           <=  0.0_pREAL))        extmsg = trim(extmsg)//' k_1'
+      if (any(prm%k_2           <=  0.0_pREAL))        extmsg = trim(extmsg)//' k_2'
+      if (any(prm%delta_Q       <=  0.0_pREAL))        extmsg = trim(extmsg)//' delta_Q'
+      if (any(prm%A             <=  0.0_pREAL))        extmsg = trim(extmsg)//' A'
+      if (any(prm%B             <=  0.0_pREAL))        extmsg = trim(extmsg)//' B'
+      if (any(prm%rho_mob_0     <=  0.0_pREAL))        extmsg = trim(extmsg)//' rho_mob_0'
+      if (any(prm%nu            <=  0.0_pREAL))        extmsg = trim(extmsg)//' nu'
+      if (any(prm%delta_F       <=  0.0_pREAL))        extmsg = trim(extmsg)//' delta_F'
+      if (any(prm%delta_V       <=  0.0_pREAL))        extmsg = trim(extmsg)//' delta_V'
       if (    prm%G_0           <= 0.0_pREAL)          extmsg = trim(extmsg)//' G_0'
 
     else slipActive
@@ -186,6 +201,10 @@ module function plastic_dislobasic_init() result(myPlasticity)
                prm%alpha_n, &
                prm%A, &
                prm%B, &
+               prm%rho_mob_0, &
+               prm%nu, &
+               prm%delta_F, &
+               prm%delta_V, &
                source=emptyRealArray)
       allocate(prm%forestProjection(0,0))
 
@@ -392,12 +411,14 @@ pure subroutine kinetics_sl(Mp,T,ph,en, &
     ddot_gamma_dtau
   real(pREAL), dimension(param(ph)%sum_N_sl) :: &
     tau, &
-    v_g, &
     tau_eff, &                                                                                      !< effective resolved stress
-    dv_g_dtau
+    A_T, &
+    B_T
   integer :: i
 
   associate(prm => param(ph), stt => state(ph), dst => dependentState(ph))
+
+    T = thermal_T(ph,en)
 
     tau = [(math_tensordot(Mp,prm%P_sl(1:3,1:3,i)),i = 1, prm%sum_N_sl)]
 
@@ -405,9 +426,21 @@ pure subroutine kinetics_sl(Mp,T,ph,en, &
 
     significantStress: where(tau_eff > tol_math_check)
 
-      dot_gamma_sl = sign(prm%A * sinh(prm%B*tau_eff), tau)
+      if (prm%isothermal_flow) then
+    
+        A_T = prm%A
+        B_T = prm%B
 
-      ddot_gamma_dtau = prm%A * prm%B * cosh(prm%B*tau_eff)
+      else
+
+        A_T = prm%rho_mob_0 * prm%nu * (prm%b_sl**2.0_pREAL) * exp(-1.0_pREAL * prm%delta_F/K_B/T)
+        B_T = prm%delta_V /K_B/T
+
+      end if
+
+      dot_gamma_sl = sign(A_T * sinh(B_T*tau_eff), tau)
+
+      ddot_gamma_dtau = A_T * B_T * cosh(B_T*tau_eff)
 
     else where significantStress
       dot_gamma_sl    = 0.0_pREAL
