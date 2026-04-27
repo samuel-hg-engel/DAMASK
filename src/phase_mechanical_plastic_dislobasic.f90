@@ -21,7 +21,7 @@ submodule(phase:plastic) dislobasic
       tau_0, &                                                                                      !< intrinsic strength
       A, &                                                                                          !< dislocation activation energy factor
       B, &                                                                                          !< dislocation activation volume factor
-      rho_m, &
+      rho_mob_0, &
       nu, &
       delta_F, &
       delta_V
@@ -422,19 +422,17 @@ pure subroutine kinetics_sl(Mp,T,ph,en, &
 
     tau_eff = abs(tau)-dst%tau_pass(:,en)
 
+    if (prm%isothermal_flow) then
+      A_T = prm%A
+      B_T = prm%B
+
+    else
+      A_T = prm%rho_mob_0 * prm%nu * (prm%b_sl**2.0_pREAL) * exp(-1.0_pREAL * prm%delta_F/K_B/T)
+      B_T = prm%delta_V /K_B/T
+
+    end if
+
     significantStress: where(tau_eff > tol_math_check)
-
-      if (prm%isothermal_flow) then
-    
-        A_T = prm%A
-        B_T = prm%B
-
-      else
-
-        A_T = prm%rho_mob_0 * prm%nu * (prm%b_sl**2.0_pREAL) * exp(-1.0_pREAL * prm%delta_F/K_B/T)
-        B_T = prm%delta_V /K_B/T
-
-      end if
 
       dot_gamma_sl = sign(A_T * sinh(B_T*tau_eff), tau)
 
