@@ -418,8 +418,6 @@ pure subroutine kinetics_sl(Mp,T,ph,en, &
 
   associate(prm => param(ph), stt => state(ph), dst => dependentState(ph))
 
-    T = thermal_T(ph,en)
-
     tau = [(math_tensordot(Mp,prm%P_sl(1:3,1:3,i)),i = 1, prm%sum_N_sl)]
 
     tau_eff = abs(tau)-dst%tau_pass(:,en)
