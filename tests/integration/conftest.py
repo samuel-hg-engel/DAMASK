@@ -1,10 +1,10 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
-from pathlib import Path
-import os
 import datetime
 import glob
-import shutil
+import os
 import re
+import shutil
+from pathlib import Path
 
 import h5py
 import numpy as np
@@ -12,11 +12,16 @@ import pytest
 
 import damask
 
+
 def pytest_addoption(parser):
     parser.addoption('--update', action='store_true', default=False,
                      help='Update reference results.')
     parser.addoption('--damask-root',default=os.environ.get('DAMASK_ROOT'),
                      help='DAMASK root directory.')
+    parser.addoption('--buildcmd-post', default=None,
+                     help='Extra arguments passed to BUILDCMD_POST in CMake.')
+    parser.addoption('--build-type', default='DEBUG',
+                     help='CMake build type. (used for compile tests)')
     parser.addoption('--rng-entropy',
                      help='Entropy for random seed generator.')
     parser.addoption('--mpi-launcher',default='mpiexec',
@@ -46,6 +51,15 @@ def np_rng(request):
 def mpi_launcher(request):
     """Name of the MPI launcher."""
     return request.config.getoption('--mpi-launcher')
+
+@pytest.fixture
+def buildcmd_post(request):
+    """Additional arguments for BUILDCMD_POST."""
+    return request.config.getoption('--buildcmd-post')
+
+@pytest.fixture
+def build_type(request):
+    return request.config.getoption('--build-type')
 
 
 patched_version = '99.99.99-9999-pytest'
@@ -132,6 +146,9 @@ def assert_allclose():
         Relative tolerance.
     atol : float
         Absolute tolerance.
+    equal_nan : bool
+        Whether NaNs in the same positions compare as equal.
+        Defaults to False.
     N : int
         Maximum number of reported deviating values.
         Defaults to 16. N=None outputs all values.
@@ -142,16 +159,17 @@ def assert_allclose():
     def _assert_allclose(a,b,
                          rtol: float = 1e-05,
                          atol: float = 1e-08,
+                         equal_nan: bool = False,
                          N = 16,
                          msg = '',
                          ):
-        assert np.logical_or(np.isclose(a,b, rtol=rtol,atol=atol),
-                             np.isclose(b,a, rtol=rtol,atol=atol)).all(), \
-               report_nonclose(a,b, rtol=rtol,atol=atol, N=N, msg=msg)
+        assert np.logical_or(np.isclose(a,b, rtol=rtol,atol=atol,equal_nan=equal_nan),
+                             np.isclose(b,a, rtol=rtol,atol=atol,equal_nan=equal_nan)).all(), \
+               report_nonclose(a,b, rtol=rtol,atol=atol, equal_nan=equal_nan, N=N, msg=msg)
 
     return _assert_allclose
 
-def report_nonclose(a, b, rtol, atol, N, msg):
+def report_nonclose(a, b, rtol, atol, equal_nan, N, msg):
     """
     Report where values of two arrays deviate from each other.
 
@@ -167,6 +185,8 @@ def report_nonclose(a, b, rtol, atol, N, msg):
         Relative tolerance.
     atol : float
         Absolute tolerance.
+    equal_nan : bool
+        Whether NaNs in the same positions compare as equal.
     N : int
         Maximum number of reported deviating values.
         Defaults to all.
@@ -180,14 +200,16 @@ def report_nonclose(a, b, rtol, atol, N, msg):
         Description of differences.
 
     """
-    a_ = np.atleast_1d(np.asarray(a))
-    b_ = np.atleast_1d(np.asarray(b))
-    if a_.shape != b_.shape: b_ = np.broadcast_to(b_,a.shape)
+    a_,b_ = np.broadcast_arrays(np.atleast_1d(np.asarray(a)),
+                                np.atleast_1d(np.asarray(b)))
 
     absdiff = np.abs(a_ - b_)
     absmax  = np.max(np.abs(np.stack((a_, b_))), axis=0)
 
-    idx = (absdiff > atol + rtol * absmax).nonzero()
+    idx = np.logical_not(
+              np.logical_or(np.isclose(a_,b_,rtol=rtol,atol=atol,equal_nan=equal_nan),
+                            np.isclose(b_,a_,rtol=rtol,atol=atol,equal_nan=equal_nan))
+            ).nonzero()
     ids = np.argsort(absdiff[idx])[::-1]
     n = len(idx[0])
     split = N is not None and N<n
@@ -197,8 +219,9 @@ def report_nonclose(a, b, rtol, atol, N, msg):
              +f' at {np.transpose(idx)[i]}' for i in list(ids[head])+list(ids[tail])]
     if split: diffs.insert(head.stop,'...')
 
-    return '\n'.join(['']+diffs
-                     +['',f'fraction {n}/{a_.size} outside tolerance']
+    return '\n'.join( ['',f'fraction {n}/{a_.size} outside tolerance']
+                     +[f'tolerance: atol = {atol} + rtol = {rtol} * absmax']
+                     +['']+diffs
                      +(['',msg] if msg is not None else [])
                      )
 

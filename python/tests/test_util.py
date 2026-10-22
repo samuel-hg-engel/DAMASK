@@ -1,12 +1,12 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
-import sys
-import random
 import pydoc
+import random
+import sys
 
-import pytest
-import numpy as np
-from scipy import stats
 import h5py
+import numpy as np
+import pytest
+from scipy import stats
 
 from damask import util
 
@@ -48,9 +48,9 @@ def test_srepr(input,glue,quote,output):
                          ([0.666666666666,-0.33333333333,-0.33333],[2,-1,-1]),
                          ([1./3., 1./4., 1./22],[536870912, 402653184,  73209669]),
                         ])
-def test_scale2coprime(input,output,N):
+def test_scale2coprime(assert_allclose,input,output,N):
     res = util.scale_to_coprime(input,N)
-    assert np.allclose(res/np.max(np.abs(res)),output/np.max(np.abs(output)),atol=1e-2,rtol=0)
+    assert_allclose(res/np.max(np.abs(res)),output/np.max(np.abs(output)),atol=1e-2,rtol=0)
 
 
 @pytest.mark.parametrize('rv',[stats.rayleigh(),stats.weibull_min(1.2),stats.halfnorm(),stats.pareto(2.62)])
@@ -87,9 +87,9 @@ def test_hybridIA_linear(np_rng):
                           ([1,1,0],'x',False,False,[0.5,0]),
                           ([1,1,1],'y',True, True, [0.3660254, 0,0.3660254]),
                          ])
-def test_project_equal_angle(point,direction,normalize,keepdims,answer):
-    assert np.allclose(util.project_equal_angle(np.array(point),direction=direction,
-                                                normalize=normalize,keepdims=keepdims),answer)
+def test_project_equal_angle(assert_allclose,point,direction,normalize,keepdims,answer):
+    assert_allclose(util.project_equal_angle(np.array(point),direction=direction,
+                                             normalize=normalize,keepdims=keepdims),answer)
 
 @pytest.mark.parametrize('point,direction,normalize,keepdims,answer',
                          [
@@ -100,9 +100,9 @@ def test_project_equal_angle(point,direction,normalize,keepdims,answer):
                           ([1,1,0],'x',False,False,[0.70710678,0]),
                           ([1,1,1],'y',True, True, [0.45970084,0,0.45970084]),
                          ])
-def test_project_equal_area(point,direction,normalize,keepdims,answer):
-    assert np.allclose(util.project_equal_area(np.array(point),direction=direction,
-                                                normalize=normalize,keepdims=keepdims),answer)
+def test_project_equal_area(assert_allclose,point,direction,normalize,keepdims,answer):
+    assert_allclose(util.project_equal_area(np.array(point),direction=direction,
+                                            normalize=normalize,keepdims=keepdims),answer)
 
 @pytest.mark.parametrize('fro,to,mode,answer',
                          [
@@ -153,44 +153,59 @@ def test_decorate(style):
 
 @pytest.mark.parametrize('complete',[True,False])
 @pytest.mark.parametrize('fhandle',[True,False])
-def test_D3D_base_group(np_rng,tmp_path,complete,fhandle):
+@pytest.mark.parametrize('file_version',[7,8])
+def test_DREAM3D_base_group(np_rng,tmp_path,complete,fhandle,file_version):
     random.seed(int(np_rng.integers(np.iinfo(int).max)))
     base_group = ''.join(random.choices('DAMASK', k=10))
     with h5py.File(tmp_path/'base_group.dream3d','w') as f:
-        f.create_group('/'.join((base_group,'_SIMPL_GEOMETRY')))
-        if complete:
-            f['/'.join((base_group,'_SIMPL_GEOMETRY'))].create_dataset('SPACING',data=np.ones(3))
+        f.create_group(base_group)
+        match file_version:
+            case 8:
+                if complete:
+                    f[base_group].attrs['_SPACING']=np.ones(3)
+            case 7:
+                f.create_group('/'.join((base_group,'_SIMPL_GEOMETRY')))
+                if complete:
+                    f['/'.join((base_group,'_SIMPL_GEOMETRY'))].create_dataset('SPACING',data=np.ones(3))
 
     fname = tmp_path/'base_group.dream3d'
     if fhandle: fname = h5py.File(fname)
     if complete:
-        assert base_group == util.DREAM3D_base_group(fname)
+        assert base_group == util.DREAM3D_base_group(fname,f'{file_version}.0')
     else:
         with pytest.raises(ValueError):
-            util.DREAM3D_base_group(fname)
+            util.DREAM3D_base_group(fname,f'{file_version}.0')
 
 @pytest.mark.parametrize('complete',[True,False])
 @pytest.mark.parametrize('fhandle',[True,False])
-def test_D3D_cell_data_group(np_rng,tmp_path,complete,fhandle):
+@pytest.mark.parametrize('file_version',[7,8])
+def test_DREAM3D_cell_data_group(np_rng,tmp_path,complete,fhandle,file_version):
     random.seed(int(np_rng.integers(np.iinfo(int).max)))
     base_group = ''.join(random.choices('DAMASK', k=10))
     cell_data_group = ''.join(random.choices('KULeuven', k=10))
     cells = np_rng.integers(1,50,3)
     with h5py.File(tmp_path/'cell_data_group.dream3d','w') as f:
-        f.create_group('/'.join((base_group,'_SIMPL_GEOMETRY')))
-        f['/'.join((base_group,'_SIMPL_GEOMETRY'))].create_dataset('SPACING',data=np.ones(3))
-        f['/'.join((base_group,'_SIMPL_GEOMETRY'))].create_dataset('DIMENSIONS',data=cells[::-1])
-        f[base_group].create_group(cell_data_group)
+        f.create_group('/'.join([base_group,cell_data_group]))
+
+        match file_version:
+            case 8:
+                f[base_group].attrs['_SPACING']=np.ones(3)
+                f[base_group].attrs['_DIMENSIONS']=cells[::-1]
+            case 7:
+                f[base_group].create_group('_SIMPL_GEOMETRY')
+                f['/'.join((base_group,'_SIMPL_GEOMETRY'))].create_dataset('SPACING',data=np.ones(3))
+                f['/'.join((base_group,'_SIMPL_GEOMETRY'))].create_dataset('DIMENSIONS',data=cells[::-1])
+
         if complete:
-            f['/'.join((base_group,cell_data_group))].create_dataset('data',shape=np.append(cells,1))
+            f['/'.join((base_group,cell_data_group))].create_dataset('data',shape=np.append(cells,1),dtype='f4')
 
     fname = tmp_path/'cell_data_group.dream3d'
     if fhandle: fname = h5py.File(fname)
     if complete:
-        assert cell_data_group == util.DREAM3D_cell_data_group(fname)
+        assert cell_data_group == util.DREAM3D_cell_data_group(fname,f'{file_version}.0')
     else:
         with pytest.raises(ValueError):
-            util.DREAM3D_cell_data_group(fname)
+            util.DREAM3D_cell_data_group(fname,f'{file_version}.0')
 
 
 @pytest.mark.parametrize('full,reduced',[({},                           {}),
@@ -216,11 +231,11 @@ def test_flatten(full,reduced):
 
 
 def test_double_Bravais_to_Miller():
-    with pytest.raises(KeyError):
+    with pytest.raises(TypeError):
         util.Bravais_to_Miller(uvtw=np.ones(4),hkil=np.ones(4))
 
 def test_double_Miller_to_Bravais():
-    with pytest.raises(KeyError):
+    with pytest.raises(TypeError):
         util.Miller_to_Bravais(uvw=np.ones(4),hkl=np.ones(4))
 
 @pytest.mark.parametrize('key_value',[{'uvtw':[1.,0.,-1.,1.1]},
@@ -278,3 +293,26 @@ def test_standardize_MillerBravais(np_rng,dim):
     idx_missing[...,2][idx_full[...,3]>0] = ...
     assert np.equal(idx_full,util._standardize_MillerBravais(idx_red)).all() and \
             np.equal(idx_full,util._standardize_MillerBravais(idx_missing)).all()
+
+def test_NestedDefaultDict():
+    d = util.NestedDefaultDict()
+    d['a']['b']['c'] = 'hello'
+    d.to_regular() == {'a':{'b':{'c':'hello'}}}
+
+
+@pytest.mark.parametrize('d1,d2',[({1:np.ones(3)},{1:np.ones(3)}),
+                                  ({1:{2:np.ones(3)}},{1:{2:np.ones(3)}}),
+                                  ({'one':1.0},{'one':1}),
+                                  ({1:{'a':4}},{1:{'a':4}})
+                                 ])
+def test_dict_equal_equal(d1,d2):
+    assert util.dict_equal(d1,d2)
+
+@pytest.mark.parametrize('d1,d2',[({1:{2:np.ones(3)}},{1:{2:np.zeros(3)}}),
+                                  ({1:{'a':4}},{1:{'b':4}}),
+                                  ({1:np.ones(3)},{1:1.0}),
+                                  ({1:{'a':{1:2}}},{1:{'b':{1:2}}}),
+                                  ({1:{'a':{1:np.ones(3)}}},{1:{'b':{1:22}}})
+                                 ])
+def test_dict_equal_not_equal(d1,d2):
+    assert not util.dict_equal(d1,d2)

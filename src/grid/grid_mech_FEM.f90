@@ -11,16 +11,16 @@ module grid_mechanical_FEM
   use PETScDMDA
   use PETScSNES
   use PETScMat
-#ifndef PETSC_HAVE_MPI_F90MODULE_VISIBILITY
+#ifndef PETSC_EXPOSES_MPI
   use MPI_f08
 #endif
+  use HDF5
 
   use prec
   use parallelization
   use IO
   use misc
   use CLI
-  use HDF5
   use HDF5_utilities
   use math
   use rotations
@@ -32,7 +32,7 @@ module grid_mechanical_FEM
   use discretization_grid
   use constants
 
-#ifndef PETSC_HAVE_MPI_F90MODULE_VISIBILITY
+#ifndef PETSC_EXPOSES_MPIF90
   implicit none(type,external)
 #else
   implicit none
@@ -79,8 +79,7 @@ module grid_mechanical_FEM
   character(len=:), allocatable :: incInfo                                                          !< time and increment information
   real(pREAL), dimension(3,3,3,3) :: &
     C_volAvg = 0.0_pREAL, &                                                                         !< current volume average stiffness
-    C_volAvgLastInc = 0.0_pREAL, &                                                                  !< previous volume average stiffness
-    S = 0.0_pREAL                                                                                   !< current compliance (filled up with zeros)
+    C_volAvgLastInc = 0.0_pREAL                                                                     !< previous volume average stiffness
 
   real(pREAL) :: &
     err_BC                                                                                          !< deviation from stress BC
@@ -236,24 +235,16 @@ subroutine grid_mechanical_FEM_init(num_grid_mech)
 
 !--------------------------------------------------------------------------------------------------
 ! init fields
-  restartRead: if (CLI_restartInc > 0) then
+  restartRead: if (CLI_restartInc /= -1) then
     print'(/,1x,a,1x,i0)', 'loading restart data of increment', CLI_restartInc
 
     fileHandle  = HDF5_openFile(CLI_jobName//'_restart.hdf5','r')
     groupHandle = HDF5_openGroup(fileHandle,'solver')
 
     call HDF5_read(P_aim,groupHandle,'P_aim',.false.)
-    call MPI_Bcast(P_aim,9_MPI_INTEGER_KIND,MPI_DOUBLE,0_MPI_INTEGER_KIND,MPI_COMM_WORLD,err_MPI)
-    call parallelization_chkerr(err_MPI)
     call HDF5_read(F_aim,groupHandle,'F_aim',.false.)
-    call MPI_Bcast(F_aim,9_MPI_INTEGER_KIND,MPI_DOUBLE,0_MPI_INTEGER_KIND,MPI_COMM_WORLD,err_MPI)
-    call parallelization_chkerr(err_MPI)
     call HDF5_read(F_aim_lastinc,groupHandle,'F_aim_lastinc',.false.)
-    call MPI_Bcast(F_aim_lastinc,9_MPI_INTEGER_KIND,MPI_DOUBLE,0_MPI_INTEGER_KIND,MPI_COMM_WORLD,err_MPI)
-    call parallelization_chkerr(err_MPI)
-    call HDF5_read(F_aimDot,groupHandle,'F_aimDot',.false.)
-    call MPI_Bcast(F_aimDot,9_MPI_INTEGER_KIND,MPI_DOUBLE,0_MPI_INTEGER_KIND,MPI_COMM_WORLD,err_MPI)
-    call parallelization_chkerr(err_MPI)
+    call HDF5_read(F_aimDot,groupHandle,'F_aim_dot',.false.)
     call HDF5_read(temp33n,groupHandle,'F')
     F = reshape(temp33n,[3,3,cells(1),cells(2),cells3])
     call HDF5_read(temp33n,groupHandle,'F_lastinc')
@@ -276,14 +267,10 @@ subroutine grid_mechanical_FEM_init(num_grid_mech)
   call DMDAVecRestoreArray(DM_mech,u_lastinc_vec,u_lastinc,err_PETSc)
   CHKERRQ(err_PETSc)
 
-  restartRead2: if (CLI_restartInc > 0) then
+  restartRead2: if (CLI_restartInc /= -1) then
     print'(1x,a,1x,i0)', 'loading additional restart data of increment', CLI_restartInc
-    call HDF5_read(C_volAvg,groupHandle,'C_volAvg',.false.)
-    call MPI_Bcast(C_volAvg,81_MPI_INTEGER_KIND,MPI_DOUBLE,0_MPI_INTEGER_KIND,MPI_COMM_WORLD,err_MPI)
-    call parallelization_chkerr(err_MPI)
-    call HDF5_read(C_volAvgLastInc,groupHandle,'C_volAvgLastInc',.false.)
-    call MPI_Bcast(C_volAvgLastInc,81_MPI_INTEGER_KIND,MPI_DOUBLE,0_MPI_INTEGER_KIND,MPI_COMM_WORLD,err_MPI)
-    call parallelization_chkerr(err_MPI)
+    call HDF5_read(C_volAvg,groupHandle,'C_avg_vol',.false.)
+    call HDF5_read(C_volAvgLastInc,groupHandle,'C_avg_vol_lastinc',.false.)
 
     call HDF5_closeGroup(groupHandle)
     call HDF5_closeFile(fileHandle)
@@ -311,8 +298,6 @@ function grid_mechanical_FEM_solution(incInfoIn) result(solution)
 
 
   incInfo = incInfoIn
-
-  S = utilities_maskedCompliance(params%rotation_BC,params%stress_mask,C_volAvg)
 
   call SNESsolve(SNES_mech,PETSC_NULL_VEC,u_vec,err_PETSc)
   CHKERRQ(err_PETSc)
@@ -344,7 +329,7 @@ subroutine grid_mechanical_FEM_forward(cutBack,guess,Delta_t,Delta_t_old,t_remai
     Delta_t_old, &
     Delta_t, &
     t_remaining                                                                                     !< remaining time of current load case
-  type(tBoundaryCondition), intent(in) :: &
+  type(tBCmech), intent(in) :: &
     stress_BC, &
     deformation_BC
   type(tRotation),          intent(in) :: &
@@ -366,7 +351,7 @@ subroutine grid_mechanical_FEM_forward(cutBack,guess,Delta_t,Delta_t_old,t_remai
     if     (deformation_BC%myType=='L') then                                                        ! calculate F_aimDot from given L and current F
       F_aimDot = F_aimDot &
                + matmul(merge(.0_pREAL,deformation_BC%values,deformation_BC%mask),F_aim_lastinc)
-    elseif (deformation_BC%myType=='dot_F') then                                                    ! F_aimDot is prescribed
+    elseif (deformation_BC%myType=='F_dot') then                                                    ! F_aimDot is prescribed
       F_aimDot = F_aimDot &
                + merge(.0_pREAL,deformation_BC%values,deformation_BC%mask)
     elseif (deformation_BC%myType=='F') then                                                        ! aim at end of load case is prescribed
@@ -395,7 +380,7 @@ subroutine grid_mechanical_FEM_forward(cutBack,guess,Delta_t,Delta_t_old,t_remai
   F_aim = F_aim_lastinc + F_aimDot * Delta_t
   if (stress_BC%myType=='P')     P_aim = P_aim &
                                        + merge(.0_pREAL,(stress_BC%values - P_aim)/t_remaining,stress_BC%mask)*Delta_t
-  if (stress_BC%myType=='dot_P') P_aim = P_aim &
+  if (stress_BC%myType=='P_dot') P_aim = P_aim &
                                        + merge(.0_pREAL,stress_BC%values,stress_BC%mask)*Delta_t
 
   call VecAXPY(u_vec,Delta_t,u_dot_vec,err_PETSc)
@@ -452,9 +437,9 @@ subroutine grid_mechanical_FEM_restartWrite()
     call HDF5_write(P_aim,groupHandle,'P_aim',.false.)
     call HDF5_write(F_aim,groupHandle,'F_aim',.false.)
     call HDF5_write(F_aim_lastinc,groupHandle,'F_aim_lastinc',.false.)
-    call HDF5_write(F_aimDot,groupHandle,'F_aimDot',.false.)
-    call HDF5_write(C_volAvg,groupHandle,'C_volAvg',.false.)
-    call HDF5_write(C_volAvgLastInc,groupHandle,'C_volAvgLastInc',.false.)
+    call HDF5_write(F_aimDot,groupHandle,'F_aim_dot',.false.)
+    call HDF5_write(C_volAvg,groupHandle,'C_avg_vol',.false.)
+    call HDF5_write(C_volAvgLastInc,groupHandle,'C_avg_vol_lastinc',.false.)
     call HDF5_closeGroup(groupHandle)
     call HDF5_closeFile(fileHandle)
   end if
@@ -577,7 +562,8 @@ subroutine form_residual(da_local,x_local, &
 
 !--------------------------------------------------------------------------------------------------
 ! stress BC handling
-  F_aim = F_aim - math_mul3333xx33(S, P_av - P_aim)                                                 ! S = 0.0 for no bc
+  F_aim = F_aim &
+        - utilities_defGradAdjustment(params%rotation_BC,params%stress_mask,C_volAvg,P_av - P_aim)
   err_BC = maxval(abs(merge(.0_pREAL,P_av - P_aim,params%stress_mask)))
 
 !--------------------------------------------------------------------------------------------------
@@ -714,9 +700,9 @@ subroutine form_jacobian(da_local,x_local,Jac_pre,Jac,dummy,err_PETSc)
                    matmul(reshape(reshape(homogenization_dPdF(1:3,1:3,1:3,1:3,ce), &
                                           shape=[3,3,3,3], order=[2,1,4,3]),shape=[9,9]),BMatFull))*detJ
 #if PETSC_VERSION_MINOR<23
-    call MatSetValuesStencil(Jac,24_pPETScInt,row,24_pPetscInt,col,K_ele,ADD_VALUES,err_PETSc)
+    call MatSetValuesStencil(Jac,24_pPETSCINT,row,24_pPETSCINT,col,K_ele,ADD_VALUES,err_PETSc)
 #else
-    call MatSetValuesStencil(Jac,24_pPETScInt,row,24_pPetscInt,col,reshape(K_ele,[size(K_ele)]),ADD_VALUES,err_PETSc)
+    call MatSetValuesStencil(Jac,24_pPETSCINT,row,24_pPETSCINT,col,reshape(K_ele,[size(K_ele)]),ADD_VALUES,err_PETSc)
 #endif
     CHKERRQ(err_PETSc)
   end do; end do; end do
@@ -733,7 +719,7 @@ subroutine form_jacobian(da_local,x_local,Jac_pre,Jac,dummy,err_PETSc)
 ! applying boundary conditions
   diag = (C_volAvg(1,1,1,1)/delta(1)**2 + C_volAvg(2,2,2,2)/delta(2)**2 + C_volAvg(3,3,3,3)/delta(3)**2) &
        * detJ
-  call MatZeroRowsColumns(Jac,size(rows,kind=pPetscInt),rows,diag,PETSC_NULL_VEC,PETSC_NULL_VEC,err_PETSc)
+  call MatZeroRowsColumns(Jac,size(rows,kind=pPETSCINT),rows,diag,PETSC_NULL_VEC,PETSC_NULL_VEC,err_PETSc)
   CHKERRQ(err_PETSc)
   call DMGetGlobalVector(da_local,coordinates,err_PETSc)
   CHKERRQ(err_PETSc)

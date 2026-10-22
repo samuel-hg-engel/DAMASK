@@ -16,7 +16,7 @@ def test_grid_read_VTI_init_phi(res_path,tmp_path,copy_files,assert_allclose,np_
     material = 'material'
     job = f'{grid}_{load}'
 
-    g = damask.GeomGrid(np.zeros([3,3,3]), [3,3,3])
+    g = damask.GeomGrid(np.zeros([3,3,3],int), [3,3,3])
     phi_0 = np.ones_like(g.material,dtype=float)
     phi_0.ravel()[phi_0.size//2] = np_rng.random()                                                  # random damage at central voxel
     g.initial_conditions['phi'] = phi_0
@@ -24,7 +24,7 @@ def test_grid_read_VTI_init_phi(res_path,tmp_path,copy_files,assert_allclose,np_
 
     copy_files(res_path,tmp_path)
 
-    damask.util.run(f'DAMASK_grid -l {load}.yaml -g {grid}.vti -m {material}.yaml -j {job}',
+    damask.util.run(f'damask_grid -l {load}.yaml -g {grid}.vti -m {material}.yaml -j {job}',
                     wd=tmp_path)
 
     result = damask.Result(tmp_path/f'{job}.hdf5')

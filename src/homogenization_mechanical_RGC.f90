@@ -89,14 +89,13 @@ module subroutine RGC_init()
 
   print'(/,1x,a)', '<<<+-  homogenization:mechanical:RGC init  -+>>>'
 
-  print'(/,a,i0)', ' # homogenizations: ',count(mechanical_type == MECHANICAL_RGC_ID)
-  flush(IO_STDOUT)
-
   print'(/,1x,a)', 'D.D. Tjahjanto et al., International Journal of Material Forming 2(1):939–942, 2009'
-  print'(  1x,a)', 'https://doi.org/10.1007/s12289-009-0619-1'//IO_EOL
+  print'(  1x,a)', 'https://doi.org/10.1007/s12289-009-0619-1'
 
   print'(/,1x,a)', 'D.D. Tjahjanto et al., Modelling and Simulation in Materials Science and Engineering 18:015006, 2010'
-  print'(  1x,a)', 'https://doi.org/10.1088/0965-0393/18/1/015006'//IO_EOL
+  print'(  1x,a)', 'https://doi.org/10.1088/0965-0393/18/1/015006'
+
+  print'(/,a,i0)', ' # homogenizations: ',count(mechanical_type == MECHANICAL_RGC_ID)
 
 
   material_homogenization => config_material%get_dict('homogenization')
@@ -117,8 +116,8 @@ module subroutine RGC_init()
   num%xSmoo        =  num_RGC%get_asReal('relevant_mismatch',  defaultVal=1.0e-5_pREAL)
   num%viscPower    =  num_RGC%get_asReal('viscosity_exponent', defaultVal=1.0e+0_pREAL)
   num%viscModus    =  num_RGC%get_asReal('viscosity_modulus',  defaultVal=0.0e+0_pREAL)
-  num%refRelaxRate =  num_RGC%get_asReal('dot_a_ref',          defaultVal=1.0e-3_pREAL)
-  num%maxdRelax    =  num_RGC%get_asReal('dot_a_max',          defaultVal=1.0e+0_pREAL)
+  num%refRelaxRate =  num_RGC%get_asReal('a_dot_ref',          defaultVal=1.0e-3_pREAL)
+  num%maxdRelax    =  num_RGC%get_asReal('a_dot_max',          defaultVal=1.0e+0_pREAL)
   num%maxVolDiscr  =  num_RGC%get_asReal('Delta_V_max',        defaultVal=1.0e-5_pREAL)
   num%volDiscrMod  =  num_RGC%get_asReal('Delta_V_modulus',    defaultVal=1.0e+12_pREAL)
   num%volDiscrPow  =  num_RGC%get_asReal('Delta_V_exponent',   defaultVal=5.0_pREAL)
@@ -131,15 +130,19 @@ module subroutine RGC_init()
   if (num%xSmoo <= 0.0_pREAL)        call IO_error(301,ext_msg='relevant_mismatch')
   if (num%viscPower < 0.0_pREAL)     call IO_error(301,ext_msg='viscosity_exponent')
   if (num%viscModus < 0.0_pREAL)     call IO_error(301,ext_msg='viscosity_modulus')
-  if (num%refRelaxRate <= 0.0_pREAL) call IO_error(301,ext_msg='dot_a_ref')
-  if (num%maxdRelax <= 0.0_pREAL)    call IO_error(301,ext_msg='dot_a_max')
+  if (num%refRelaxRate <= 0.0_pREAL) call IO_error(301,ext_msg='a_dot_ref')
+  if (num%maxdRelax <= 0.0_pREAL)    call IO_error(301,ext_msg='a_dot_max')
   if (num%maxVolDiscr <= 0.0_pREAL)  call IO_error(301,ext_msg='Delta_V_max')
   if (num%volDiscrMod < 0.0_pREAL)   call IO_error(301,ext_msg='Delta_V_modulus')
   if (num%volDiscrPow <= 0.0_pREAL)  call IO_error(301,ext_msg='Delta_V_exponent')
 
 
-  do ho = 1, size(mechanical_type)
+  do ho = 1, size(material_name_homogenization)
+
     if (mechanical_type(ho) /= MECHANICAL_RGC_ID) cycle
+
+    print'(/,1x,a,1x,i0,a)', 'homogenization',ho,': '//material_name_homogenization(ho)
+
     homog => material_homogenization%get_dict(ho)
     homogMech => homog%get_dict('mechanical')
     associate(prm => param(ho), &
@@ -721,11 +724,11 @@ module subroutine RGC_result(ho,group)
                                    'average mismatch tensor','1')
         case('Delta_V')
           call result_writeDataset(dst%volumeDiscrepancy,group,trim(prm%output(o)), &
-                                 'volume discrepancy','m³')
-        case('max_dot_a')
+                                   'volume discrepancy','m³')
+        case('a_dot_max')
           call result_writeDataset(dst%relaxationrate_max,group,trim(prm%output(o)), &
-                                 'maximum relaxation rate','m/s')
-        case('avg_dot_a')
+                                   'maximum relaxation rate','m/s')
+        case('a_dot_avg')
           call result_writeDataset(dst%relaxationrate_avg,group,trim(prm%output(o)), &
                                    'average relaxation rate','m/s')
       end select

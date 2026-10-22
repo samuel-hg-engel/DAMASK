@@ -1,15 +1,15 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
-from typing import Optional, Union, Literal
 import math
+from typing import Literal
 
 import numpy as np
+import numpy.typing as npt
 
-from ._typehints import FloatSequence, IntSequence, CrystalFamily, BravaisLattice, CrystalKinematics
-from . import util
-from . import Rotation
+from . import Rotation, util
+from ._typehints import BravaisLattice, CrystalFamily, CrystalKinematics, FloatSequence, IntSequence
 
 
-_kinematics: dict[BravaisLattice, dict[CrystalKinematics, list[np.ndarray]]] = {
+_kinematics: dict[BravaisLattice, dict[CrystalKinematics, list[npt.NDArray[np.integer]]]] = {
     'cF': {
         'slip': [np.array([
                    [ 0,+1,-1, +1,+1,+1],
@@ -246,7 +246,7 @@ _kinematics: dict[BravaisLattice, dict[CrystalKinematics, list[np.ndarray]]] = {
 }
 
 
-lattice_symmetries: dict[Optional[BravaisLattice], CrystalFamily] = {
+lattice_symmetries: dict[BravaisLattice, CrystalFamily] = {
                 'aP': 'triclinic',
 
                 'mP': 'monoclinic',
@@ -267,7 +267,7 @@ lattice_symmetries: dict[Optional[BravaisLattice], CrystalFamily] = {
                 'cF': 'cubic',
                }
 
-orientation_relationships: dict[str, dict[str,list[np.ndarray]]] = {
+orientation_relationships: dict[str, dict[str,list[npt.NDArray[np.integer]]]] = {
   'KS': { # https://doi.org/10.1016/j.jallcom.2012.02.004
     'cF-->cI' : [
         np.repeat(np.array([
@@ -710,10 +710,10 @@ class Crystal():
     """
 
     def __init__(self, *,
-                 family: Optional[CrystalFamily] = None,
-                 lattice: Optional[BravaisLattice] = None,
-                 a: Optional[float] = None, b: Optional[float] = None, c: Optional[float] = None,
-                 alpha: Optional[float] = None, beta: Optional[float] = None, gamma: Optional[float] = None,
+                 family: CrystalFamily | None = None,
+                 lattice: BravaisLattice | None = None,
+                 a: float | None = None, b: float | None = None, c: float | None = None,
+                 alpha: float | None = None, beta: float | None = None, gamma: float | None = None,
                  degrees: bool = False):
         """
         New representation of a crystal.
@@ -740,53 +740,51 @@ class Crystal():
         degrees : bool, optional
             Angles are given in degrees. Defaults to False.
         """
-        if not lattice and not family:
+        def mask_None(values):
+            return np.ma.array(values, mask=[v is None for v in values], dtype=float)
+
+        if lattice is None and family is None:
             raise KeyError('Crystal initialization requires either lattice or family information')
         if family is not None and family not in list(lattice_symmetries.values()):
             raise KeyError(f'invalid crystal family "{family}"')
         if lattice is not None and family is not None and family != lattice_symmetries[lattice]:
             raise KeyError(f'incompatible family "{family}" for lattice "{lattice}"')
 
-        self.family  = lattice_symmetries[lattice] if family is None else family
+        self.family  = lattice_symmetries[lattice] if family is None else family                    # type: ignore[index]
         self.lattice = lattice
 
         if self.lattice is not None:
-            self.a = 1. if a is None else a
-            self.b = b
-            self.c = c
-            self.a = float(self.a) if self.a is not None else \
-                     (self.b / self.ratio['b'] if self.b is not None and self.ratio['b'] is not None else
-                      self.c / self.ratio['c'] if self.c is not None and self.ratio['c'] is not None else None)
-            self.b = float(self.b) if self.b is not None else \
-                     (self.a * self.ratio['b'] if self.a is not None and self.ratio['b'] is not None else
-                      self.c / self.ratio['c'] * self.ratio['b']
-                      if self.c is not None and self.ratio['b'] is not None and self.ratio['c'] is not None else None)
-            self.c = float(self.c) if self.c is not None else \
-                     (self.a * self.ratio['c'] if self.a is not None and self.ratio['c'] is not None else
-                      self.b / self.ratio['b'] * self.ratio['c']
-                      if self.c is not None and self.ratio['b'] is not None and self.ratio['c'] is not None else None)
+            x = mask_None([a,b,c])
+            r = mask_None([1.0,self.ratio['b'],self.ratio['c']])
+            R = mask_None([1.0,
+                           self.ratio['b'] if 'b' in self.immutable else None,
+                           self.ratio['c'] if 'c' in self.immutable else None,])
+            implied_a = (x / R).compressed()
+            a_resolved = np.average(implied_a) if implied_a.size else 1.0
+            if implied_a.size and not np.allclose(implied_a, a_resolved):
+                raise ValueError(f'inconsistent a values {implied_a} implied')
+            if not np.all(resolvable := ~x.mask | ~r.mask):
+                raise ValueError(f"insufficient information to determine {', '.join(np.array(['a','b','c'])[~resolvable])}")
+            x[x.mask] = a_resolved * r[x.mask]
 
-            self.alpha = math.radians(alpha) if degrees and alpha is not None else alpha
-            self.beta  = math.radians(beta)  if degrees and beta  is not None else beta
-            self.gamma = math.radians(gamma) if degrees and gamma is not None else gamma
-            if self.alpha is None and 'alpha' in self.immutable: self.alpha = self.immutable['alpha']
-            if self.beta  is None and 'beta'  in self.immutable: self.beta  = self.immutable['beta']
-            if self.gamma is None and 'gamma' in self.immutable: self.gamma = self.immutable['gamma']
+            self.a, self.b, self.c = x.data
 
-            if \
-                (self.a     is None) \
-             or (self.b     is None or ('b'     in self.immutable and self.b     != self.immutable['b'] * self.a)) \
-             or (self.c     is None or ('c'     in self.immutable and self.c     != self.immutable['c'] * self.b)) \
-             or (self.alpha is None or ('alpha' in self.immutable and self.alpha != self.immutable['alpha'])) \
-             or (self.beta  is None or ('beta'  in self.immutable and self.beta  != self.immutable['beta'])) \
-             or (self.gamma is None or ('gamma' in self.immutable and self.gamma != self.immutable['gamma'])):
-                raise ValueError (f'incompatible parameters {self.parameters} for crystal family {self.family}')
+            angles = []
+            for name, value in zip(('alpha','beta','gamma'),(alpha,beta,gamma)):
+                fixed = self.immutable.get(name)
+                value = (math.radians(value) if degrees else value) if value is not None else fixed
+                if value is None: raise ValueError(f'missing angle {name}')
+                if value <= 0.0: raise ValueError(f'angle {name} must be positive')
+                if fixed is not None and not math.isclose(value, fixed):
+                    raise ValueError(f'inconsistent angle {name} ≠ {np.degrees(fixed):.5g}°')
+                angles.append(value)
 
-            if np.any(np.array([self.alpha,self.beta,self.gamma]) <= 0):
-                raise ValueError ('lattice angles must be positive')
-            if np.any([np.roll([self.alpha,self.beta,self.gamma],r)[0]
-              >= np.sum(np.roll([self.alpha,self.beta,self.gamma],r)[1:]) for r in range(3)]):
-                raise ValueError ('each lattice angle must be less than sum of others')
+            self.alpha, self.beta, self.gamma = angles
+
+            if np.any(inadmissible := [np.roll([self.alpha,self.beta,self.gamma],-r)[0]
+                             >= np.sum(np.roll([self.alpha,self.beta,self.gamma],-r)[1:]) for r in range(3)]):
+                raise ValueError (f"angle {', '.join(np.array(['alpha','beta','gamma'])[inadmissible])}"+
+                                  ' must be smaller than the sum of the other two')
 
 
     def __repr__(self):
@@ -828,7 +826,7 @@ class Crystal():
                 self.family == other.family)
 
     @property
-    def parameters(self) -> Optional[dict]:
+    def parameters(self) -> dict | None:
         """
         Return lattice parameters.
 
@@ -903,7 +901,7 @@ class Crystal():
 
 
     @property
-    def standard_triangle(self) -> Union[dict[str, np.ndarray], None]:
+    def standard_triangle(self) -> dict[str, npt.NDArray[np.floating]] | None:
         """
         Return corners of the standard triangle.
 
@@ -1002,10 +1000,9 @@ class Crystal():
 
         References
         ----------
-        U.F. Kocks et al.,
-        Texture and Anisotropy: Preferred Orientations in Polycrystals
-        and their Effect on Materials Properties.
-        Cambridge University Press 1998. Table II
+        U.F. Kocks et al., Texture and Anisotropy: Preferred Orientations
+        in Polycrystals and their Effect on Materials Properties
+        Cambridge University Press, 1998. Table II
 
         https://en.wikipedia.org/wiki/Crystal_system#Crystal_classes
         """
@@ -1094,17 +1091,13 @@ class Crystal():
         """
         _ratio = { 'hexagonal': {'c': math.sqrt(8./3.)}}
 
-        return dict(b = self.immutable['b']
-                        if 'b' in self.immutable else
-                        _ratio[self.family]['b'] if self.family in _ratio and 'b' in _ratio[self.family] else None,
-                    c = self.immutable['c']
-                        if 'c' in self.immutable else
-                        _ratio[self.family]['c'] if self.family in _ratio and 'c' in _ratio[self.family] else None,
+        return dict(b = self.immutable.get('b', _ratio.get(self.family, {}).get('b')),
+                    c = self.immutable.get('c', _ratio.get(self.family, {}).get('c')),
                    )
 
 
     @property
-    def basis_real(self) -> np.ndarray:
+    def basis_real(self) -> npt.NDArray[np.floating]:
         """
         Return orthogonal real space crystal basis.
 
@@ -1133,7 +1126,7 @@ class Crystal():
 
 
     @property
-    def basis_reciprocal(self) -> np.ndarray:
+    def basis_reciprocal(self) -> npt.NDArray[np.floating]:
         """
         Return reciprocal (dual) crystal basis.
 
@@ -1146,7 +1139,7 @@ class Crystal():
 
 
     @property
-    def lattice_points(self) -> np.ndarray:                                                         # type: ignore[return]
+    def lattice_points(self) -> npt.NDArray[np.floating]:                                           # type: ignore[return]
         """
         Return lattice points.
 
@@ -1175,8 +1168,8 @@ class Crystal():
                                            ])
 
     def to_lattice(self, *,
-                   direction: Optional[FloatSequence] = None,
-                   plane: Optional[FloatSequence] = None) -> np.ndarray:                            # numpydoc ignore=PR01,PR02
+                   direction: FloatSequence | None = None,
+                   plane: FloatSequence | None = None) -> npt.NDArray[np.floating]:                 # numpydoc ignore=PR01,PR02
         """
         Calculate lattice vector corresponding to crystal frame direction or plane normal.
 
@@ -1192,8 +1185,8 @@ class Crystal():
             Lattice vector of direction or plane.
             Use util.scale_to_coprime to convert to (integer) Miller indices.
         """
-        if (direction is not None) ^ (plane is None):
-            raise KeyError('specify either "direction" or "plane"')
+        if (direction is None) == (plane is None):
+            raise TypeError('specify either "direction" or "plane"')
         basis,axis = (self.basis_reciprocal,np.asarray(direction)) \
                      if plane is None else \
                      (self.basis_real,np.asarray(plane))
@@ -1201,10 +1194,10 @@ class Crystal():
 
 
     def to_frame(self, *,
-                 uvw: Optional[IntSequence] = None,
-                 hkl: Optional[IntSequence] = None,
-                 uvtw: Optional[IntSequence] = None,
-                 hkil: Optional[IntSequence] = None) -> np.ndarray:                                 # numpydoc ignore=PR01,PR02
+                 uvw: IntSequence | None = None,
+                 hkl: IntSequence | None = None,
+                 uvtw: IntSequence | None = None,
+                 hkil: IntSequence | None = None) -> npt.NDArray[np.floating]:                      # numpydoc ignore=PR01,PR02
         """
         Calculate crystal frame vector corresponding to lattice direction [uvw]/[uvtw] or plane normal (hkl)/(hkil).
 
@@ -1244,7 +1237,7 @@ class Crystal():
 
 
     def kinematics(self,
-                   mode: CrystalKinematics) -> dict[str, list[np.ndarray]]:
+                   mode: CrystalKinematics) -> dict[str, list[npt.NDArray[np.integer]]]:
         """
         Return crystal kinematics systems.
 
@@ -1281,7 +1274,7 @@ class Crystal():
 
 
     def characteristic_shear_twin(self,
-                                  N_twin: Union[list[int], Literal['*']] = '*') -> np.ndarray:
+                                  N_twin: list[int] | Literal['*'] = '*') -> npt.NDArray[np.floating]:
         """
         Return characteristic shear for twinning.
 
@@ -1309,7 +1302,7 @@ class Crystal():
             return np.array([[0.5*np.sqrt(2.0)]*N_twin_[0]])
         elif self.lattice == 'hP':
             N_twin_ = [len(a) for a in _kinematics[self.lattice]['twin']] if N_twin == '*' else N_twin
-            c_a = self.c/self.a                                                                     # type: ignore[operator]
+            c_a = self.c/self.a
             return np.array([[(3.0-c_a**2)/np.sqrt(3.0)/c_a]*N_twin_[0],
                              [1.0/c_a]*N_twin_[1],
                              [(9.0-4.0*c_a**2)/np.sqrt(48.0)/c_a]*N_twin_[2],
@@ -1379,12 +1372,12 @@ class Crystal():
         o_p = np.stack((o.to_frame(uvw=o_p[:,0] if o_l != 'hP' else util.Bravais_to_Miller(uvtw=o_p[:,0])),
                         o.to_frame(hkl=o_p[:,1] if o_l != 'hP' else util.Bravais_to_Miller(hkil=o_p[:,1]))),
                         axis=-2)
-        return (o_l,Rotation.from_parallel(source=m_p,target=o_p,active=True))
+        return (o_l,Rotation.from_parallel(source=m_p,target=o_p,active=True))                      # type: ignore[arg-type]
 
 
     def Schmid(self, *,
-               N_slip: Optional[Union[IntSequence, Literal['*']]] = None,
-               N_twin: Optional[Union[IntSequence, Literal['*']]] = None) -> np.ndarray:            # numpydoc ignore=PR01,PR02
+               N_slip: IntSequence | Literal['*'] | None = None,
+               N_twin: IntSequence | Literal['*'] | None = None) -> npt.NDArray[np.floating]:       # numpydoc ignore=PR01,PR02
         u"""
         Calculate Schmid matrix P = d ⨂ n for selected deformation systems.
 
@@ -1428,15 +1421,16 @@ class Crystal():
                 [-0.195, -0.338, -0.246],
                 [ 0.358,  0.62 ,  0.451]]])
         """
-        if (N_slip is not None) ^ (N_twin is None):
-            raise KeyError('specify either "N_slip" or "N_twin"')
+        if (N_slip is None) == (N_twin is None):
+            raise TypeError('specify either "N_slip" or "N_twin"')
+        elif N_slip is not None:
+            kinematics,active = self.kinematics('slip'),N_slip
+        elif N_twin is not None:
+            kinematics,active = self.kinematics('twin'),N_twin
 
-        kinematics,active = (self.kinematics('slip'),N_slip) if N_twin is None else \
-                            (self.kinematics('twin'),N_twin)
         everylen = list(map(len,kinematics['direction']))
-
-        if active == '*': active = everylen
-        if not active or (np.array(active) > everylen[:len(active)]).any():
+        if isinstance(active,str) and active == '*': active = everylen
+        if (np.asarray(active) < 0).any() or (np.asarray(active) > everylen[:len(active)]).any():
             raise ValueError('Invalid number of slip/twin systems')
 
         d = Crystal.to_frame(self,uvw=np.vstack([kinematics['direction'][i][:n] for i,n in enumerate(active)]))

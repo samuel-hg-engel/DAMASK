@@ -1,8 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 import sys
 
-import pytest
 import numpy as np
+import pytest
 from vtkmodules.vtkCommonCore import vtkVersion
 
 from damask import VTK
@@ -13,7 +13,7 @@ from damask import Colormap
 from damask import ConfigMaterial
 from damask import util
 from damask import seeds
-from damask import grid_filters
+from damask import grid
 
 
 @pytest.fixture
@@ -40,7 +40,7 @@ def random(np_rng):
     """Simple geometry."""
     size = (1+np_rng.random(3))*1e-5
     cells = np_rng.integers(10,20,3)
-    s = seeds.from_random(size,np_rng.integers(5,25),cells,rng_seed=np_rng)
+    s = seeds.from_random(size,np_rng.integers(5,25),cells,rng=np_rng)
     return GeomGrid.from_Voronoi_tessellation(cells,size,s)
 
 @pytest.fixture
@@ -81,13 +81,16 @@ def test_invalid_no_material(np_rng,tmp_path):
     with pytest.raises(KeyError):
         GeomGrid.load(tmp_path/'no_materialpoint.vti')
 
-def test_invalid_material_type():
+@pytest.mark.parametrize('dtype',[np.bool_,np.complex128])
+def test_invalid_material_type(np_rng,dtype):
     with pytest.raises(TypeError):
-        GeomGrid(np.zeros((3,3,3),dtype='complex'),np.ones(3))
+        GeomGrid(np_rng.integers(5,size=[2,3,4]).astype(dtype),np.ones(3))
 
-def test_cast_to_int():
-    g = GeomGrid(np.zeros((3,3,3),dtype=np.float64),np.ones(3))
-    assert g.material.dtype in [np.int32,np.int64]
+@pytest.mark.parametrize('dtype',[np.float32,np.float64])
+def test_invalid_material_type(np_rng,dtype):
+    with pytest.raises(ValueError):
+        GeomGrid(np_rng.random(size=[2,3,4],dtype=dtype),np.ones(3))
+
 
 def test_invalid_size(default):
     with pytest.raises(ValueError):
@@ -98,7 +101,7 @@ def test_save_load_SPPARKS(res_path,tmp_path):
     v = VTK.load(res_path/'SPPARKS_dump.vti')
     v.set('material',v.get('Spin')).delete('Spin').save(tmp_path/'SPPARKS_dump.vti',parallel=False)
     assert GeomGrid.load_SPPARKS(res_path/'SPPARKS_dump.vti') == \
-            GeomGrid.load(tmp_path/'SPPARKS_dump.vti')
+           GeomGrid.load(tmp_path/'SPPARKS_dump.vti')
 
 def test_invalid_origin(default):
     with pytest.raises(ValueError):
@@ -184,7 +187,7 @@ def test_flip_invalid(default,directions):
 @pytest.mark.parametrize('selection',[None,1,[1],[1,2,3]])
 @pytest.mark.parametrize('periodic',[True,False])
 def test_clean_reference(default,update,res_path,distance,selection,periodic):
-    current = default.clean(distance,selection,periodic=periodic,rng_seed=0)
+    current = default.clean(distance,selection,periodic=periodic,rng=0)
     reference = res_path/f'clean_{distance}_{util.srepr(selection,"+")}_{periodic}.vti'
     if update:
         current.save(reference)
@@ -195,12 +198,12 @@ def test_clean_reference(default,update,res_path,distance,selection,periodic):
 def test_clean_invert(np_rng,default,data_type,invert):
     selection = np_rng.integers(1,20,6) if data_type == 'array' else list(np_rng.integers(1,20,6))
     selection_inverse = np.setdiff1d(default.material,selection)
-    assert default.clean(selection=selection,invert_selection=invert,rng_seed=0) == \
-           default.clean(selection=selection_inverse,invert_selection=not invert,rng_seed=0)
+    assert default.clean(selection=selection,invert_selection=invert,rng=0) == \
+           default.clean(selection=selection_inverse,invert_selection=not invert,rng=0)
 
 def test_clean_selection_empty(random):
-    assert random.clean(selection=None,invert_selection=True,rng_seed=0) == random.clean(rng_seed=0) and \
-           random.clean(selection=None,invert_selection=False,rng_seed=0) == random.clean(rng_seed=0)
+    assert random.clean(selection=None,invert_selection=True,rng=0) == random.clean(rng=0) and \
+           random.clean(selection=None,invert_selection=False,rng=0) == random.clean(rng=0)
 
 @pytest.mark.parametrize('cells',[
                                   (10,11,10),
@@ -348,9 +351,9 @@ def test_add_primitive_shape_symmetry(np_rng,exponent):
     """Shapes defined in the center should always produce a grid with reflection symmetry along the coordinate axis."""
     o = np_rng.random(3)-.5
     s = np_rng.random(3)*5.
-    grid = GeomGrid(np.zeros(np_rng.integers(8,32,3),'i'),s,o).add_primitive(np_rng.random(3)*3.,o+s/2.,exponent)
+    g = GeomGrid(np.zeros(np_rng.integers(8,32,3),'i'),s,o).add_primitive(np_rng.random(3)*3.,o+s/2.,exponent)
     for axis in [0,1,2]:
-        assert np.all(grid.material==np.flip(grid.material,axis=axis))
+        assert np.all(g.material==np.flip(g.material,axis=axis))
 
 @pytest.mark.parametrize('selection',[1,None])
 def test_vicinity_offset(np_rng,selection):
@@ -368,9 +371,9 @@ def test_vicinity_offset(np_rng,selection):
     if selection == 1:
         m2[m==1] = 1
 
-    grid = GeomGrid(m,np_rng.random(3)).vicinity_offset(distance,offset,selection=selection)
+    m3 = GeomGrid(m,np_rng.random(3)).vicinity_offset(distance,offset,selection=selection).material
 
-    assert np.all(m2==grid.material)
+    assert np.all(m2==m3)
 
 @pytest.mark.parametrize('data_type',['array','list'])
 @pytest.mark.parametrize('invert',[True,False])
@@ -396,33 +399,72 @@ def test_tessellation_approaches(np_rng,periodic):
     size   = np_rng.random(3) + 1.0
     N_seeds= np_rng.integers(10,30)
     seeds  = np_rng.random((N_seeds,3)) * np.broadcast_to(size,(N_seeds,3))
-    Voronoi  = GeomGrid.from_Voronoi_tessellation( cells,size,seeds,                 np.arange(N_seeds)+5,periodic)
-    Laguerre = GeomGrid.from_Laguerre_tessellation(cells,size,seeds,np.ones(N_seeds),np.arange(N_seeds)+5,periodic)
+    weights = np.ones(N_seeds) * 100 * np_rng.random() + 1
+    Voronoi  = GeomGrid.from_Voronoi_tessellation( cells,size,seeds,        np.arange(N_seeds)+5,periodic)
+    Laguerre = GeomGrid.from_Laguerre_tessellation(cells,size,seeds,weights,np.arange(N_seeds)+5,periodic)
     assert Laguerre == Voronoi
 
-def test_Laguerre_weights(np_rng):
+@pytest.mark.parametrize('periodic',[True,False])
+def test_Laguerre_weights_extreme(np_rng,periodic):
     cells  = np_rng.integers(10,20,3)
     size   = np_rng.random(3) + 1.0
     N_seeds= np_rng.integers(10,30)
     seeds  = np_rng.random((N_seeds,3)) * np.broadcast_to(size,(N_seeds,3))
-    weights= np.full((N_seeds),-np.inf)
+    weights= np.zeros(N_seeds)
     ms     = np_rng.integers(N_seeds)
-    weights[ms] = np_rng.random()
-    Laguerre = GeomGrid.from_Laguerre_tessellation(cells,size,seeds,weights,periodic=np_rng.random()>0.5)
+    weights[ms] = np.finfo(weights.dtype).max
+    Laguerre = GeomGrid.from_Laguerre_tessellation(cells,size,seeds,weights,periodic=periodic)
     assert np.all(Laguerre.material == ms)
 
+@pytest.mark.parametrize('periodic',[True,False])
+def test_Laguerre_weights_invariant(np_rng,periodic):
+    cells  = np_rng.integers(10,20,3)
+    size   = np_rng.random(3) + 1.0
+    N_seeds= np_rng.integers(10,30)
+    seeds  = np_rng.random((N_seeds,3)) * np.broadcast_to(size,(N_seeds,3))
+    weights= np_rng.random(N_seeds)
+    a = GeomGrid.from_Laguerre_tessellation(cells,size,seeds,weights,                periodic=periodic)
+    b = GeomGrid.from_Laguerre_tessellation(cells,size,seeds,weights+np_rng.random(),periodic=periodic)
+    assert np.all(a.material == b.material)
+
+@pytest.mark.parametrize('periodic',[True,False])
+def test_Laguerre_correctness(np_rng,periodic):
+    """Compare bias-based formulation to naive/direct implementation."""
+    def find_closest_seed(seeds, weights, point):
+        return np.argmin(np.sum((np.broadcast_to(point,(len(seeds),3))-seeds)**2,axis=1) - weights)
+    cells  = np_rng.integers(10,20,3)
+    size   = np_rng.random(3) + 1.0
+    N_seeds= np_rng.integers(10,30)
+    seeds  = np_rng.random((N_seeds,3)) * np.broadcast_to(size,(N_seeds,3))
+    weights= np_rng.random(N_seeds)
+    if periodic:
+        weights_p = np.tile(weights,27)
+        seeds_p = np.vstack((seeds  -np.array([size[0],0.,0.]),seeds,  seeds  +np.array([size[0],0.,0.])))
+        seeds_p = np.vstack((seeds_p-np.array([0.,size[1],0.]),seeds_p,seeds_p+np.array([0.,size[1],0.])))
+        seeds_p = np.vstack((seeds_p-np.array([0.,0.,size[2]]),seeds_p,seeds_p+np.array([0.,0.,size[2]])))
+    else:
+        weights_p = np.array(weights,float)
+        seeds_p   = seeds
+
+    coords = grid.coordinates0_point(cells,size).reshape(-1,3)
+    material = np.array([find_closest_seed(seeds_p,weights_p,coord) for coord in coords]).reshape(cells)
+    if periodic: material %= len(weights)
+    from_bias = GeomGrid.from_Laguerre_tessellation(cells,size,seeds,weights,periodic=periodic)
+    assert np.all(from_bias.material == material)
+
+@pytest.mark.parametrize('periodic',[True,False])
 @pytest.mark.parametrize('approach',['Laguerre','Voronoi'])
-def test_tessellate_bicrystal(np_rng,approach):
+def test_tessellate_bicrystal(np_rng,approach,periodic):
     cells = np_rng.integers(5,10,3)*2
     size  = cells.astype(float)
     seeds = np.vstack((size*np.array([0.5,0.25,0.5]),size*np.array([0.5,0.75,0.5])))
     material = np.zeros(cells)
     material[:,cells[1]//2:,:] = 1
     if   approach == 'Laguerre':
-        grid = GeomGrid.from_Laguerre_tessellation(cells,size,seeds,np.ones(2),periodic=np_rng.random()>0.5)
+        g = GeomGrid.from_Laguerre_tessellation(cells,size,seeds,[np_rng.random()]*2,periodic=periodic)
     elif approach == 'Voronoi':
-        grid = GeomGrid.from_Voronoi_tessellation(cells,size,seeds,            periodic=np_rng.random()>0.5)
-    assert np.all(grid.material == material)
+        g = GeomGrid.from_Voronoi_tessellation(cells,size,seeds,                     periodic=periodic)
+    assert np.all(g.material == material)
 
 @pytest.mark.parametrize('surface',['Schwarz P',
                                     'Double Primitive',
@@ -443,9 +485,9 @@ def test_minimal_surface_basic_properties(np_rng,surface):
     threshold = 2*np_rng.random()-1.
     periods = np_rng.integers(2)+1
     materials = np_rng.integers(0,40,2)
-    grid = GeomGrid.from_minimal_surface(cells,size,surface,threshold,periods,materials)
-    assert set(grid.material.flatten()) | set(materials) == set(materials) \
-            and (grid.size == size).all() and (grid.cells == cells).all()
+    g = GeomGrid.from_minimal_surface(cells,size,surface,threshold,periods,materials)
+    assert set(g.material.flatten()) | set(materials) == set(materials) \
+           and (g.size == size).all() and (g.cells == cells).all()
 
 @pytest.mark.parametrize('surface,threshold',[('Schwarz P',0),
                                               ('Double Primitive',-1./6.),
@@ -462,13 +504,13 @@ def test_minimal_surface_basic_properties(np_rng,surface):
                                              ])
 def test_minimal_surface_volume(surface,threshold):
     cells = np.ones(3,dtype=int)*64
-    grid = GeomGrid.from_minimal_surface(cells,np.ones(3),surface,threshold)
-    assert np.isclose(np.count_nonzero(grid.material==1)/np.prod(grid.cells),.5,rtol=1e-3)
+    g = GeomGrid.from_minimal_surface(cells,np.ones(3),surface,threshold)
+    assert np.isclose(np.count_nonzero(g.material==1)/np.prod(g.cells),.5,rtol=1e-3)
 
 def test_from_table(np_rng):
     cells = np_rng.integers(60,100,3)
     size = np.ones(3)+np_rng.random(3)
-    coords = grid_filters.coordinates0_point(cells,size).reshape(-1,3,order='F')
+    coords = grid.coordinates0_point(cells,size).reshape(-1,3,order='F')
     z = np.ones(cells.prod())
     z[cells[:2].prod()*int(cells[2]/2):] = 0
     t = Table({'coords':3,'z':1},np.column_stack((coords,z)))
@@ -479,18 +521,18 @@ def test_from_table(np_rng):
 def test_from_table_recover(np_rng,tmp_path):
     cells = np_rng.integers(60,100,3)
     size = np.ones(3)+np_rng.random(3)
-    s = seeds.from_random(size,np_rng.integers(60,100),rng_seed=np_rng)
-    grid = GeomGrid.from_Voronoi_tessellation(cells,size,s)
-    coords = grid_filters.coordinates0_point(cells,size)
-    t = Table({'c':3,'m':1},np.column_stack((coords.reshape(-1,3,order='F'),grid.material.flatten(order='F'))))
-    assert grid.sort().renumber() == GeomGrid.from_table(t,'c',['m'])
+    s = seeds.from_random(size,np_rng.integers(60,100),rng=np_rng)
+    g = GeomGrid.from_Voronoi_tessellation(cells,size,s)
+    coords = grid.coordinates0_point(cells,size)
+    t = Table({'c':3,'m':1},np.column_stack((coords.reshape(-1,3,order='F'),g.material.flatten(order='F'))))
+    assert g.sort().renumber() == GeomGrid.from_table(t,'c',['m'])
 
 @pytest.mark.parametrize('periodic',[True,False])
 @pytest.mark.parametrize('direction',['x','y','z',['x','y'],'zy','xz',['x','y','z']])
 @pytest.mark.xfail(vtkVersion.GetVTKMajorVersion()<8, reason='missing METADATA')
 def test_get_grain_boundaries(update,res_path,periodic,direction):
-    grid = GeomGrid.load(res_path/'get_grain_boundaries_8g12x15x20.vti')
-    current = grid.get_grain_boundaries(periodic,direction)
+    g = GeomGrid.load(res_path/'get_grain_boundaries_8g12x15x20.vti')
+    current = g.get_grain_boundaries(periodic,direction)
     if update:
         current.save(res_path/f'get_grain_boundaries_8g12x15x20_{"".join(direction)}_{periodic}.vtu',parallel=False)
     reference = VTK.load(res_path/f'get_grain_boundaries_8g12x15x20_{"".join(direction)}_{periodic}.vtu')
@@ -501,28 +543,31 @@ def test_get_grain_boundaries_invalid(default,directions):
     with pytest.raises(ValueError):
         default.get_grain_boundaries(directions=directions)
 
-def test_load_DREAM3D(res_path):
+@pytest.mark.parametrize('file_version',[7,8])
+def test_load_DREAM3D(assert_allclose,res_path,file_version):
     """
     For synthetic microstructures (no in-grain scatter), check that:
     1) the sorted and renumbered grain-wise representation is equivalent to the cell-wise representation.
     2) the same orientations are assigned to each cell for the grain-wise and cell-wise approaches.
     """
     # grain-wise data (using existing DREAM.3D segmentation)
-    grid_grain = GeomGrid.load_DREAM3D(res_path/'2phase_irregularGrid.dream3d','FeatureIds')
-    material_grain = ConfigMaterial.load_DREAM3D(res_path/'2phase_irregularGrid.dream3d','Grain Data')
+    fname = res_path/f'2phase_irregularGrid_v{file_version}.dream3d'
+    grid_grain = GeomGrid.load_DREAM3D(fname,'FeatureIds')
+    material_grain = ConfigMaterial.load_DREAM3D(fname,'Grain Data')
     O_grain = np.array([material['constituents'][0]['O'] for material in material_grain['material']])
     # cell-wise data (clustering identical orientation-phase combinations)
-    grid_cell = GeomGrid.load_DREAM3D(res_path/'2phase_irregularGrid.dream3d')
-    material_cell = ConfigMaterial.load_DREAM3D(res_path/'2phase_irregularGrid.dream3d')
+    grid_cell = GeomGrid.load_DREAM3D(fname)
+    material_cell = ConfigMaterial.load_DREAM3D(fname)
     O_cell = np.array([material['constituents'][0]['O'] for material in material_cell['material']])
 
-    assert np.allclose(grid_grain.origin,grid_cell.origin) and \
-            np.allclose(grid_grain.size,grid_cell.size) and \
-            np.allclose(O_grain[grid_grain.material],O_cell[grid_cell.material]) and \
-            (grid_grain.renumber().sort().material == grid_cell.material).all()
+    assert_allclose(grid_grain.origin,grid_cell.origin)
+    assert_allclose(grid_grain.size,grid_cell.size)
+    assert_allclose(O_grain[grid_grain.material],O_cell[grid_cell.material])
+    assert (grid_grain.renumber().sort().material == grid_cell.material).all()
 
-def test_load_DREAM3D_reference(res_path,update):
-    current   = GeomGrid.load_DREAM3D(res_path/'measured.dream3d')
+@pytest.mark.parametrize('file_version',[7,8])
+def test_load_DREAM3D_reference(res_path,update,file_version):
+    current   = GeomGrid.load_DREAM3D(res_path/f'measured_v{file_version}.dream3d')
     reference = GeomGrid.load(res_path/'measured.vti')
     if update:
         current.save(res_path/'measured.vti')

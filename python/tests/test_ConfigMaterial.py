@@ -1,8 +1,9 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
-import sys
 import os
-import pytest
+import sys
+
 import numpy as np
+import pytest
 
 from damask import ConfigMaterial
 from damask import Table
@@ -166,28 +167,29 @@ def test_material_add_invalid_v(v):
         ConfigMaterial().material_add(v=v)
 
 @pytest.mark.parametrize('cell_ensemble_data',[None,'CellEnsembleData'])
-def test_load_DREAM3D(res_path,cell_ensemble_data):
-    grain_c = ConfigMaterial.load_DREAM3D(res_path/'2phase_irregularGrid.dream3d','Grain Data',
-                                          cell_ensemble_data = cell_ensemble_data)
-    point_c = ConfigMaterial.load_DREAM3D(res_path/'2phase_irregularGrid.dream3d',
-                                          cell_ensemble_data = cell_ensemble_data)
+@pytest.mark.parametrize('file_version',[7,8])
+def test_load_DREAM3D(assert_allclose,res_path,cell_ensemble_data,file_version):
+    fname = res_path/f'2phase_irregularGrid_v{file_version}.dream3d'
+    grain_c = ConfigMaterial.load_DREAM3D(fname,'Grain Data',cell_ensemble_data = cell_ensemble_data)
+    point_c = ConfigMaterial.load_DREAM3D(fname,             cell_ensemble_data = cell_ensemble_data)
 
     assert point_c.is_valid and grain_c.is_valid and \
             len(point_c['material'])+1 == len(grain_c['material'])
 
-    grain_m = GeomGrid.load_DREAM3D(res_path/'2phase_irregularGrid.dream3d','FeatureIds').material.flatten()
-    point_m = GeomGrid.load_DREAM3D(res_path/'2phase_irregularGrid.dream3d').material.flatten()
+    grain_m = GeomGrid.load_DREAM3D(fname,'FeatureIds').material.flatten()
+    point_m = GeomGrid.load_DREAM3D(fname).material.flatten()
 
     for i in np.unique(point_m):
         j = int(grain_m[(point_m==i).nonzero()[0][0]])
-        assert np.allclose(point_c['material'][i]['constituents'][0]['O'],
-                           grain_c['material'][j]['constituents'][0]['O'])
+        assert_allclose(point_c['material'][i]['constituents'][0]['O'],
+                        grain_c['material'][j]['constituents'][0]['O'])
         assert point_c['material'][i]['constituents'][0]['phase'] == \
                 grain_c['material'][j]['constituents'][0]['phase']
 
 
-def test_load_DREAM3D_reference(tmp_path,res_path,update):
-    cur = ConfigMaterial.load_DREAM3D(res_path/'measured.dream3d')
+@pytest.mark.parametrize('file_version',[7,8])
+def test_load_DREAM3D_reference(tmp_path,res_path,file_version,update):
+    cur = ConfigMaterial.load_DREAM3D(res_path/f'measured_v{file_version}.dream3d')
     ref = ConfigMaterial.load(res_path/'measured.material.yaml')
     if update:
         cur.save(res_path/'measured.material.yaml')

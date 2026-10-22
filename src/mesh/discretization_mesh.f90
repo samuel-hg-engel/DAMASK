@@ -5,17 +5,17 @@
 !> @author Philip Eisenlohr, Max-Planck-Institut für Eisenforschung GmbH
 !> @author Javier Velo, KU Leuven
 !--------------------------------------------------------------------------------------------------
-module discretization_mesh
 #include <petsc/finclude/petscdmplex.h>
 #include <petsc/finclude/petscis.h>
 #include <petsc/finclude/petscdmda.h>
+module discretization_mesh
   use PETScDMplex
   use PETScDMDA
   use PETScIS
-#if (PETSC_VERSION_MAJOR==3 && (PETSC_VERSION_MINOR>17 && PETSC_VERSION_MINOR<23))
+#if PETSC_VERSION_MINOR<23
   use PETScDT
 #endif
-#ifndef PETSC_HAVE_MPI_F90MODULE_VISIBILITY
+#ifndef PETSC_EXPOSES_MPI
   use MPI_f08
 #endif
 
@@ -26,13 +26,10 @@ module discretization_mesh
   use IO
   use discretization
   use result
-#if (PETSC_VERSION_MAJOR==3 && PETSC_VERSION_MINOR<18)
-  use FEM_quadrature
-#endif
   use types
   use prec
 
-#ifndef PETSC_HAVE_MPI_F90MODULE_VISIBILITY
+#ifndef PETSC_EXPOSES_MPIF90
   implicit none(type,external)
 #else
   implicit none
@@ -65,7 +62,7 @@ module discretization_mesh
     x_n                                                                                             !< node x,z,y coordinates
 
   character(len=pSTRLEN), dimension(:), allocatable, public, protected :: &
-    mesh_bcLabels
+    mesh_BCLabels
 
   enum, bind(c); enumerator :: &
     PETSC_BC_TYPE_CELL = 1, &
@@ -79,17 +76,15 @@ module discretization_mesh
   parameter, public :: &
     PETSC_GENERIC_LABELS = ['Cell Sets  ', 'Face Sets  ', 'Edge Sets  ', 'Vertex Sets']             ! PETSc generic labels
 
-  DM, public :: geomMesh
+  DM, public :: geom
 
-#if (PETSC_VERSION_MINOR<23)
+#if PETSC_VERSION_MINOR<23
   external :: &
-#if (PETSC_VERSION_MINOR<16)
-    DMDestroy, &
-#endif
+    PetscDualSpaceGetFunctional, &
     PetscFEDestroy, &
     PetscFEGetDimension, &
     PetscFEGetDualSpace, &
-    PetscDualSpaceGetFunctional
+    PetscFESetQuadrature
 #endif
 
   public :: &
@@ -99,186 +94,181 @@ contains
 
 
 !--------------------------------------------------------------------------------------------------
-!> @brief Initialize the mesh.
+!> @brief Initialize the mesh discretization.
 !--------------------------------------------------------------------------------------------------
 subroutine discretization_mesh_init()
 
   DM        :: globalMesh
   PetscInt  :: dimPlex, &                                                                           ! mesh dimension
                p_s, p_i, &                                                                          ! shape function/integration order
+               cell_sets_size, &                                                                    ! size of 'Cell Sets' label
                n_mesh_labels, &                                                                     ! total number of labels in mesh file
-               cellStart, cellEnd, pointStart, &
-               j
-  IS        :: label_values_IS                                                                      ! BC label values IS
-#if (PETSC_VERSION_MAJOR==3 && PETSC_VERSION_MINOR>=24)
-  IS        :: celltype_IS                                                                          ! 'celltype' label IS
-#endif
-  DMLabel   :: dm_label
-  PetscSF   :: sf
-#if (PETSC_VERSION_MAJOR==3 && PETSC_VERSION_MINOR>=24)
-  PetscBool :: isSimplex                                                                            ! reduced integration, simplex mesh
-#endif
-#if (PETSC_VERSION_MAJOR==3 && PETSC_VERSION_MINOR>17)
-  PetscQuadrature :: quadrature
-#endif
+               cell_start, cell_end, point_start, &                                                 ! first/last point values
+               j                                                                                    ! loop
+  PetscBool :: has_label, &                                                                         ! label exists in the mesh
+               is_simplex                                                                           ! simplex mesh (tri or tet elements)
+  DMLabel   :: label
+  PetscSF   :: SF
+  PetscDS   :: global_DS
+  PetscFE   :: global_FE
+  IS        :: label_values_IS, ID_material_IS, cells_IS                                            ! BC label values IS, 'Cell Sets' label/stratum values
+  IS        :: cell_types_IS                                                                        ! 'celltype' label IS
+  PetscInt  :: n_polytopes                                                                          ! number of different polytopes in the mesh
+  PetscInt,    dimension(:),     pointer     :: cell_types                                          ! array for cell_types_IS
+  PetscInt,    dimension(:,:),   allocatable :: T_e                                                 ! element connectivity (node numbers in each cell)
+  real(pREAL), dimension(:),     pointer     :: qPointsP                                            ! quadrature points coordinates
+  PetscQuadrature :: quadrature                                                                     ! quadrature object
   PetscErrorCode  :: err_PETSc
 
-  type(tDict), pointer :: &
-    num_solver, &
-    num_mesh
-  integer                                    :: dim, n, m, k
+  integer                                    :: dim, n, m, k                                        ! loop / counters
   integer(MPI_INTEGER_KIND)                  :: err_MPI
-  integer,     dimension(:),     allocatable :: bc_set_idx                                          ! index for PETSc set labels (no 'edges' in 2D)
-  PetscInt                                   :: label_size                                          ! BC label sizes (number of values it assigns)
-#if (PETSC_VERSION_MAJOR==3 && PETSC_VERSION_MINOR>=24)
-  PetscInt                                   :: nPolytopes                                          ! number of different polytopes in the mesh
-  PetscInt,    dimension(:),     pointer     :: cells_IS                                            ! celltype IS values
-#endif
-  PetscInt,    dimension(:),     pointer     :: label_values                                        ! BC label values (from IS)
+  integer,     dimension(:),     allocatable :: BC_set_idx                                          ! index for PETSc set labels (no 'edges' in 2D)
+  PetscInt,    dimension(:),     pointer     :: label_values, ID_material, cells                    ! arrays for [label_values/ID_material/cells]_IS
   PetscInt,    dimension(:),     allocatable :: materialAt, &                                       ! material ID per cell
                                                 label_tmp
-#if (PETSC_VERSION_MAJOR==3 && PETSC_VERSION_MINOR<24)
-  real(pREAL), dimension(:),     pointer     :: qPointsP
-#endif
-#if (PETSC_VERSION_MAJOR==3 && PETSC_VERSION_MINOR<24)
-  real(pREAL), dimension(:),     pointer     :: PETSC_NULL_REAL_POINTER => NULL()
-#endif
   real(pREAL), dimension(:,:),   allocatable :: v_0                                                 ! volume associated with IP (initially!)
-  real(pREAL), dimension(:,:,:), allocatable :: x_p                                                 ! IP x,y,z coordinates (after deformation!)
-#if (PETSC_VERSION_MAJOR==3 && PETSC_VERSION_MINOR>=24)
-  PetscInt,    dimension(:,:),   allocatable :: T_e                                                 ! element connectivity (node numbers in each cell)
-#endif
+  real(pREAL), dimension(:,:,:), allocatable :: x_p                                                 ! IP x,y,z coordinates
 
-  character(pSTRLEN) :: &
-    bc_label                                                                                        ! label (string, defined in mesh file)
+  type(tDict),        pointer     :: num_solver, num_mesh                                           ! numerics file dictionary entries
+  character(pSTRLEN)              :: BC_label                                                       ! label (string, defined in mesh file)
+  character(len=:),   allocatable :: PETSc_options, &                                               ! options to set up DM (from numerics file)
+                                     fname, file_content                                            ! mesh file name/content
+  PetscInt :: dev_null_i1, dev_null_i2                                                              ! not needed after https://gitlab.com/petsc/petsc/-/commit/b59e0f5d4fcb03e82d68f162f04b63b31fb8d091
+  real(pREAL), dimension(:), pointer :: dev_null_r
 
 
-  print'(/,1x,a)',   '<<<+-  discretization_mesh init  -+>>>'
+  print'(/,1x,a)',   '<<<+-  discretization_mesh init  -+>>>'; flush(IO_STDOUT)
 
-!--------------------------------------------------------------------------------
+!--------------------------------------------------------------------------------------------------
 ! read numerics parameter
   num_solver => config_numerics%get_dict('solver',defaultVal=emptyDict)
   num_mesh   => num_solver%get_dict('mesh',defaultVal=emptyDict)
   p_i = int(num_mesh%get_asInt('p_i',defaultVal=2),pPETSCINT)
   p_s = int(num_mesh%get_asInt('p_s',defaultVal=2),pPETSCINT)
 
-  call PetscOptionsInsertString(PETSC_NULL_OPTIONS,                        &
-                                ' -dm_plex_filename ' // CLI_geomFile // ' &
-                                & -dm_plex_interpolate 1                   &
-                                & -dm_plex_gmsh_use_generic                &
-                                & -dm_plex_gmsh_use_regions                &
-                                & -dm_plex_gmsh_multiple_tags              &
-                                & -dm_plex_gmsh_mark_vertices ',           &
+  call PetscOptionsInsertString(PETSC_NULL_OPTIONS,                      &
+                                ' -dm_plex_filename ' // CLI_geomFile // &
+                                ' -dm_plex_interpolate 1                 &
+                                & -dm_plex_gmsh_use_generic              &
+                                & -dm_plex_gmsh_use_regions              &
+                                & -dm_plex_gmsh_multiple_tags            &
+                                & -dm_plex_gmsh_mark_vertices ',         &
                                 err_PETSc)
-  call DMCreate(PETSC_COMM_WORLD, globalMesh, err_PETSc)
+  call DMCreate(PETSC_COMM_WORLD,globalMesh,err_PETSc)
   CHKERRQ(err_PETSc)
-  call DMSetType(globalMesh, DMPLEX, err_PETSc)
+  call DMSetType(globalMesh,DMPLEX,err_PETSc)
   CHKERRQ(err_PETSc)
-  call DMSetFromOptions(globalMesh, err_PETSc)
+  call DMSetFromOptions(globalMesh,err_PETSc)
   CHKERRQ(err_PETSc)
   call DMGetDimension(globalMesh,dimPlex,err_PETSc)
   CHKERRQ(err_PETSc)
+  call DMPlexIsSimplex(globalMesh,is_simplex,err_PETSc)
+  CHKERRQ(err_PETSc)
+  if (.not. is_simplex) then
+#if PETSC_VERSION_MINOR<24
+    call IO_error(800_pI16, 'mesh is not a simplex')
+#endif
+    p_i = p_i + 1_pPETSCINT                                                                         ! adjust for quad/hex (non-simplex)
+  end if
   call DMGetStratumSize(globalMesh,'depth',dimPlex,mesh_nElems,err_PETSc)
   CHKERRQ(err_PETSc)
 
-#if (PETSC_VERSION_MAJOR==3 && PETSC_VERSION_MINOR>=24)
-  call DMPlexIsSimplex(globalMesh,isSimplex,err_PETSc)
-  CHKERRQ(err_PETSc)
-  if (.not. isSimplex) p_i = p_i + 1_pPETSCINT                                                      ! adjust for quad/hex (non-simplex)
-#endif
-
-#if (PETSC_VERSION_MINOR>=24)
-! check invalid mesh (mixed or unsupported elements)
-  call DMGetLabelIdIS(globalMesh, 'celltype', celltype_IS, err_PETSc)
-  call ISGetSize(celltype_IS, nPolytopes, err_PETSc)
-  if (nPolytopes /= dimPlex + 1_pPETSCINT) then                                                     ! at most one polytope type per dimension (0..dimPlex)
-    call ISGetIndices(celltype_IS, cells_IS, err_PETSc)
-    if (any(cells_IS == DM_POLYTOPE_SEG_PRISM_TENSOR%v .or. &
-            cells_IS >  DM_POLYTOPE_HEXAHEDRON%v)) then
-      call IO_error(800_pI16, 'mesh contains elements other than tri/quad/tet/hex')
-    else if (count(cells_IS == DM_POLYTOPE_TRIANGLE%v .and. &
-                   cells_IS == DM_POLYTOPE_QUADRILATERAL%v, dim = 1) > 1) then
-      call IO_error(800_pI16, 'mixed triangles and quadrilaterals elements')
-    else if (count(cells_IS == DM_POLYTOPE_TRIANGLE%v .and. &
-                   cells_IS == DM_POLYTOPE_QUADRILATERAL%v, dim = 1) > 1) then
-      call IO_error(800_pI16, 'mixed tetrahedra and hexahedra elements')
+!--------------------------------------------------------------------------------------------------
+! check invalid mesh: empty 'Cell Sets' or mixed elements
+  call DMGetLabelSize(globalMesh,'Cell Sets',cell_sets_size,err_PETSc)                              ! cannot be empty, needed to assign material ID
+  if (cell_sets_size == 0_pPETSCINT) &
+    call IO_error(800_pI16,'missing definition of ',&
+                            trim(merge('surface','volume ',dimPlex == 2_pPETSCINT)),&
+                            ' group(s) for assigning material IDs')
+#if PETSC_VERSION_MINOR>=24
+  call DMGetLabelIdIS(globalMesh,'celltype',cell_types_IS,err_PETSc)
+  call ISGetSize(cell_types_IS,n_polytopes,err_PETSc)
+  if (n_polytopes /= dimPlex + 1_pPETSCINT) then                                                    ! at most one polytope type per dimension (0..dimPlex)
+    call ISGetIndices(cell_types_IS,cell_types,err_PETSc)
+    if (any(cell_types == DM_POLYTOPE_SEG_PRISM_TENSOR%v .or. &
+            cell_types >  DM_POLYTOPE_HEXAHEDRON%v)) then
+      call IO_error(800_pI16,'mesh contains elements other than tri/quad/tet/hex')
+    else if (count(cell_types == DM_POLYTOPE_TRIANGLE%v .and. &
+                   cell_types == DM_POLYTOPE_QUADRILATERAL%v,dim = 1) > 1) then
+      call IO_error(800_pI16,'mixed element types (triangle and quadrilateral)')
+    else if (count(cell_types == DM_POLYTOPE_TETRAHEDRON%v .and. &
+                   cell_types == DM_POLYTOPE_HEXAHEDRON%v,dim = 1) > 1) then
+      call IO_error(800_pI16,'mixed element types (tetrahedron and hexahedron)')
     end if
   end if
-  call ISDestroy(celltype_IS, err_PETSc)
+  call ISDestroy(cell_types_IS,err_PETSc)
 #endif
 
-!--------------------------------------------------------------------------------
+!--------------------------------------------------------------------------------------------------
 ! read mesh tags
   if (dimPlex == 2_pPETSCINT) then
-    allocate(bc_set_idx, source = [PETSC_BC_TYPE_FACE, PETSC_BC_TYPE_VERTEX])
+    allocate(BC_set_idx,source = [PETSC_BC_TYPE_FACE, PETSC_BC_TYPE_VERTEX])
   else
-    allocate(bc_set_idx, source = [PETSC_BC_TYPE_FACE, PETSC_BC_TYPE_EDGE, PETSC_BC_TYPE_VERTEX])
+    allocate(BC_set_idx,source = [PETSC_BC_TYPE_FACE, PETSC_BC_TYPE_EDGE, PETSC_BC_TYPE_VERTEX])
   end if
 
-  mesh_nBoundaries = 0_pPETSCINT
-  do n = 1, size(bc_set_idx)
-    call DMGetLabelSize(globalMesh,PETSC_GENERIC_LABELS(bc_set_idx(n)),label_size,err_PETSc)
-    CHKERRQ(err_PETSc)
-    if (label_size > 0_pPETSCINT) then
-      call DMGetLabelIdIS(globalMesh,PETSC_GENERIC_LABELS(bc_set_idx(n)),label_values_IS,err_PETSc)
+  mesh_Nboundaries = 0_pPETSCINT
+  do n = 1, size(BC_set_idx)
+    call DMHasLabel(globalMesh,PETSC_GENERIC_LABELS(BC_set_idx(n)),has_label,err_PETSc)
+    if (has_label) then
+      call DMGetLabel(globalMesh,PETSC_GENERIC_LABELS(BC_set_idx(n)),label,err_PETSc)
+      CHKERRQ(err_PETSc)
+      call DMLabelGetNonEmptyStratumValuesIS(label, label_values_IS, err_PETSc)
       CHKERRQ(err_PETSc)
       call ISGetIndices(label_values_IS,label_values,err_PETSc)
       CHKERRQ(err_PETSc)
       if (.not. allocated(mesh_boundariesIS)) then
-        allocate(mesh_boundariesIS, source = label_values)
-        allocate(mesh_boundariesIdx(label_size), source = int(bc_set_idx(n), pPETSCINT))
-        mesh_nBoundaries = mesh_nBoundaries + label_size
+        allocate(mesh_boundariesIS,source = label_values)
+        allocate(mesh_boundariesIdx(size(label_values)),source = int(BC_set_idx(n),pPETSCINT))
+        mesh_Nboundaries = mesh_Nboundaries + int(size(label_values),pPETSCINT)
       else
-        allocate(label_tmp, mold = label_values)
+        allocate(label_tmp,mold = label_values)
         k = 0
-        do m = 1, int(label_size)
+        do m = 1, size(label_values)
           if (any(label_values(m) == mesh_boundariesIS)) cycle
           k = k + 1
           label_tmp(k) = label_values(m)
         end do
-        mesh_boundariesIS = [mesh_boundariesIS, label_tmp(1:k)]
-        mesh_boundariesIdx = [mesh_boundariesIdx, [(int(bc_set_idx(n), pPETSCINT), m = 1, k)]]
-        mesh_nBoundaries = mesh_nBoundaries + int(k, pPETSCINT)
+        mesh_boundariesIS = [mesh_boundariesIS,label_tmp(1:k)]
+        mesh_boundariesIdx = [mesh_boundariesIdx,[(int(BC_set_idx(n),pPETSCINT),m = 1,k)]]
+        mesh_Nboundaries = mesh_Nboundaries + int(k,pPETSCINT)
         deallocate(label_tmp)
       end if
       call ISRestoreIndices(label_values_IS,label_values,err_PETSc)
       CHKERRQ(err_PETSc)
     end if
   end do
-  if (mesh_nBoundaries == 0_pPETSCINT) &
-    call IO_error(800_pI16, 'no mesh groups found to apply boundary conditions')
+  deallocate(BC_set_idx)
+  if (mesh_Nboundaries == 0_pPETSCINT) &
+    call IO_error(800_pI16,'no groups available for boundary condition assignment')
 
-!--------------------------------------------------------------------------------
+!--------------------------------------------------------------------------------------------------
 ! read mesh labels
-  call DMGetNumLabels(globalMesh, n_mesh_labels, err_PETSc)
+  call DMGetNumLabels(globalMesh,n_mesh_labels,err_PETSc)
   CHKERRQ(err_PETSc)
   if (n_mesh_labels > 2_pPETSCINT) then                                                             ! there are user-defined labels (for BC/material ID)
-    allocate(character(len=pSTRLEN) :: mesh_bcLabels(mesh_nBoundaries))
-    mesh_bcLabels = ''
+    allocate(character(len=pSTRLEN) :: mesh_BCLabels(mesh_Nboundaries))
+    mesh_BCLabels = ''
 
-    call DMPlexGetHeightStratum(globalMesh,0_pPETSCINT,cellStart,cellEnd,err_PETSc)
+    call DMPlexGetHeightStratum(globalMesh,0_pPETSCINT,cell_start,cell_end,err_PETSc)
     do j = 2_pPETSCINT, n_mesh_labels - 1_pPETSCINT                                                 ! skip 'celltype' and 'depth' labels; 0-indexing in PETSc
-      call DMGetLabelName(globalMesh, j, bc_label, err_PETSc)
+      call DMGetLabelName(globalMesh,j,BC_label,err_PETSc)
       CHKERRQ(err_PETSc)
-      if (any(bc_label == PETSC_GENERIC_LABELS)) cycle
-      call DMGetLabel(globalMesh, bc_label, dm_label, err_PETSc)
-      call DMLabelGetBounds(dm_label, pointStart, PETSC_NULL_INTEGER, err_PETSc)
-      if (pointStart < cellEnd) cycle
-      call DMGetLabelSize(globalMesh, bc_label, label_size, err_PETSc)
+      if (any(BC_label == PETSC_GENERIC_LABELS)) cycle
+      call DMGetLabel(globalMesh,BC_label,label,err_PETSc)
+      call DMLabelGetBounds(label,point_start,PETSC_NULL_INTEGER,err_PETSc)
+      if (point_start < cell_end) cycle
+      call DMLabelGetNonEmptyStratumValuesIS(label,label_values_IS,err_PETSc)
       CHKERRQ(err_PETSc)
-      if (label_size > 0_pPETSCINT) then
-        call DMGetLabelIdIS(globalMesh,bc_label,label_values_IS,err_PETSc)                          ! get values the label assigns (i.e. the tag)
-        CHKERRQ(err_PETSc)
-        call ISGetIndices(label_values_IS,label_values,err_PETSc)
-        CHKERRQ(err_PETSc)
-        n = findloc(mesh_boundariesIS, label_values(1), dim = 1)
-        mesh_bcLabels(n) = bc_label
-        call ISRestoreIndices(label_values_IS,label_values,err_PETSc)
-        CHKERRQ(err_PETSc)
-      end if
+      call ISGetIndices(label_values_IS,label_values,err_PETSc)
+      CHKERRQ(err_PETSc)
+      n = findloc(mesh_boundariesIS,label_values(1),dim = 1)
+      mesh_BCLabels(n) = BC_label
+      call ISRestoreIndices(label_values_IS,label_values,err_PETSc)
+      CHKERRQ(err_PETSc)
     end do
   else
-    mesh_bcLabels = emptyStrArray
+    mesh_BCLabels = emptyStrArray
   end if
 
   dim = int(dimPlex)
@@ -287,9 +277,9 @@ subroutine discretization_mesh_init()
   dimPlex = int(dim,pPETSCINT)
 
   if (worldsize == 1) then
-    call DMClone(globalMesh,geomMesh,err_PETSc)
+    call DMClone(globalMesh,geom,err_PETSc)
   else
-    call DMPlexDistribute(globalMesh,0_pPETSCINT,sf,geomMesh,err_PETSc)
+    call DMPlexDistribute(globalMesh,0_pPETSCINT,SF,geom,err_PETSc)
   end if
   CHKERRQ(err_PETSc)
 
@@ -299,44 +289,59 @@ subroutine discretization_mesh_init()
   call parallelization_chkerr(err_MPI)
   call MPI_Bcast(mesh_boundariesIdx,int(mesh_Nboundaries,MPI_INTEGER_KIND),MPI_INTEGER,0_MPI_INTEGER_KIND, &
                  MPI_COMM_WORLD,err_MPI)
-  if (worldrank /= 0) allocate(character(len=pSTRLEN) :: mesh_bcLabels(mesh_Nboundaries))
-  call MPI_Bcast(mesh_bcLabels,int(pSTRLEN*size(mesh_bcLabels),MPI_INTEGER_KIND),MPI_CHARACTER, &
+  if (worldrank /= 0) allocate(character(len=pSTRLEN) :: mesh_BCLabels(mesh_Nboundaries))
+  call MPI_Bcast(mesh_BCLabels,int(pSTRLEN*size(mesh_BCLabels),MPI_INTEGER_KIND),MPI_CHARACTER, &
                  0_MPI_INTEGER_KIND,MPI_COMM_WORLD,err_MPI)
   call parallelization_chkerr(err_MPI)
 
-  call DMDestroy(globalMesh,err_PETSc)
-  CHKERRQ(err_PETSc)
-
-! Get initial nodal coordinates
-#if (PETSC_VERSION_MAJOR==3 && PETSC_VERSION_MINOR>17)
-#if (PETSC_VERSION_MINOR>=24)
-  if (isSimplex) then
+!--------------------------------------------------------------------------------------------------
+! set up quadrature, fields (mechanical, thermal...) and DS
+#if PETSC_VERSION_MINOR>=24
+  if (is_simplex) then
     call PetscDTSimplexQuadrature(dimPlex,p_i,PETSCDTSIMPLEXQUAD_DEFAULT,quadrature,err_PETSc)
   else
     call PetscDTGaussTensorQuadrature(dimPlex,dimPlex,p_i,-1.0_pREAL,1.0_pREAL, &
                                       quadrature,err_PETSc)
   end if
-#elif (PETSC_VERSION_MINOR==23)
+#elif PETSC_VERSION_MINOR==23
   call PetscDTSimplexQuadrature(dimPlex,p_i,PETSCDTSIMPLEXQUAD_DEFAULT,quadrature,err_PETSc)
 #else
   call PetscDTSimplexQuadrature(dimPlex,p_i,-1,quadrature,err_PETSc)
 #endif
   CHKERRQ(err_PETSc)
 
-#if (PETSC_VERSION_MINOR>=24)
-  call PetscQuadratureGetData(quadrature,PETSC_NULL_INTEGER,PETSC_NULL_INTEGER, &
-                              mesh_maxNips,PETSC_NULL_REAL_POINTER, &
-                              PETSC_NULL_REAL_POINTER,err_PETSc)
-#elif (PETSC_VERSION_MINOR>21)
-  call PetscQuadratureGetData(quadrature,PETSC_NULL_INTEGER,PETSC_NULL_INTEGER, &
-                              mesh_maxNips,qPointsP,PETSC_NULL_REAL_POINTER,err_PETSc)
+  PETSc_options = ' -petscspace_degree ' // IO_intAsStr(int(p_s)) // &
+                  ' -petscdualspace_lagrange_node_type equispaced    &
+                  & -petscdualspace_lagrange_node_endpoints 1     '
+  call PetscOptionsInsertString(PETSC_NULL_OPTIONS,petsc_options,err_PETSc)
+  CHKERRQ(err_PETSc)
+  call DMcreateFEDefault(geom,dimPlex,'',p_i,global_FE,err_PETSc)
+  CHKERRQ(err_PETSc)
+  call PetscFESetQuadrature(global_FE,quadrature,err_PETSc)
+  CHKERRQ(err_PETSc)
+#if PETSC_VERSION_MINOR>22
+  call DMAddField(geom,PETSC_NULL_DMLABEL,PetscObjectCast(global_FE),err_PETSc)
 #else
-  call PetscQuadratureGetData(quadrature,PETSC_NULL_INTEGER(1),PETSC_NULL_INTEGER(1), &
-                              mesh_maxNips,qPointsP,PETSC_NULL_REAL_POINTER,err_PETSc)
+  call DMAddField(geom,PETSC_NULL_DMLABEL,global_FE,err_PETSc)
 #endif
   CHKERRQ(err_PETSc)
 
-#if (PETSC_VERSION_MINOR>=24)
+  call DMCreateDS(geom,err_PETSc)                                                                   ! create after adding all fields
+  CHKERRQ(err_PETSc)
+  call DMGetDS(geom, global_DS, err_PETSc)
+  CHKERRQ(err_PETSc)
+  call PetscDSSetForceQuad(global_DS,PETSC_FALSE,err_PETSc)
+  CHKERRQ(err_PETSc)
+  call DMDestroy(globalMesh,err_PETSc)
+  CHKERRQ(err_PETSc)
+
+!--------------------------------------------------------------------------------------------------
+! set up geometry values (node coordinates, IP, volume, connectivity, material ID)
+  call PetscQuadratureGetData(quadrature,dev_null_i1,dev_null_i2,mesh_maxNips, &
+                              qPointsP,dev_null_r,err_PETSc)
+  CHKERRQ(err_PETSc)
+
+#if PETSC_VERSION_MINOR>=24
   x_p = build_coordinates_IP(dimPlex,quadrature)
 #else
   x_p = build_coordinates_IP(dimPlex,qPointsP)
@@ -349,40 +354,52 @@ subroutine discretization_mesh_init()
   call build_nodes_and_connectivity(x_n,p_s)
 #endif
 
-#if (PETSC_VERSION_MINOR==22 || PETSC_VERSION_MINOR==23)
-  call PetscQuadratureRestoreData(quadrature,PETSC_NULL_INTEGER,PETSC_NULL_INTEGER, &
-                                  PETSC_NULL_INTEGER,qPointsP,PETSC_NULL_REAL_POINTER,err_PETSc)
-#elif (PETSC_VERSION_MINOR<22)
-  call PetscQuadratureRestoreData(quadrature,PETSC_NULL_INTEGER(1),PETSC_NULL_INTEGER(1), &
-                                  PETSC_NULL_INTEGER(1),qPointsP,PETSC_NULL_REAL_POINTER,err_PETSc)
-#endif
+  call PetscQuadratureRestoreData(quadrature,dev_null_i1,dev_null_i2,mesh_maxNips, &
+                                  qPointsP,dev_null_r,err_PETSc)
   CHKERRQ(err_PETSc)
 
-  call PetscQuadratureDestroy(quadrature, err_PETSc)
+  call PetscQuadratureDestroy(quadrature,err_PETSc)
   CHKERRQ(err_PETSc)
-#else
-  mesh_maxNips = FEM_nQuadrature(dimPlex,p_i)
-
-  x_p = build_coordinates_IP(dimPlex,FEM_quadrature_points(dimPlex,p_i)%p)
-  v_0 = build_volume_IP(dimPlex)
-  call build_nodes_and_connectivity(x_n,p_s)
-#endif
 
   allocate(materialAt(mesh_nElems))
-  do j = 1, mesh_nElems
-    call DMGetLabelValue(geomMesh,'Cell Sets',j-1,materialAt(j),err_PETSc)
+  call DMGetLabel(geom,'Cell Sets',label,err_PETSc)
+  CHKERRQ(err_PETSc)
+  call DMLabelGetValueIS(label,ID_material_IS,err_PETSc)
+  CHKERRQ(err_PETSc)
+  call ISGetIndices(ID_material_IS,ID_material,err_PETSc)
+  CHKERRQ(err_PETSc)
+  do n = 1, size(ID_material)
+    call DMLabelGetStratumIS(label,ID_material(n),cells_IS,err_PETSc)
+    CHKERRQ(err_PETSc)
+    call ISGetIndices(cells_IS,cells,err_PETSc)
+    CHKERRQ(err_PETSc)
+    materialAt(cells+1_pPETSCINT) = ID_material(n)
+    CHKERRQ(err_PETSc)
+    call ISRestoreIndices(cells_IS,cells,err_PETSc)
     CHKERRQ(err_PETSc)
   end do
+  call ISRestoreIndices(ID_material_IS,ID_material,err_PETSc)
+  CHKERRQ(err_PETSc)
+  call ISDestroy(cells_IS,err_PETSc)
+  CHKERRQ(err_PETSc)
+  call ISDestroy(ID_material_IS,err_PETSc)
+  CHKERRQ(err_PETSc)
 
-  call discretization_init(int(materialAt),&
-                           reshape(x_p,[3,int(mesh_maxNips*mesh_nElems)]), &
-                           x_n)
+  call discretization_init(int(materialAt),reshape(x_p,[3,int(mesh_maxNips*mesh_nElems)]),x_n)
 
 #if (PETSC_VERSION_MINOR>24 || (PETSC_VERSION_MINOR==24 && PETSC_VERSION_SUBMINOR>=1))
   call writeGeometry(reshape(x_p,[3,int(mesh_maxNips*mesh_nElems)]),x_n,T_e)
 #else
   call writeGeometry(reshape(x_p,[3,int(mesh_maxNips*mesh_nElems)]),x_n)
 #endif
+  if (worldrank == 0) then
+    fname = CLI_geomFile
+    if (scan(fname,'/') /= 0) fname = fname(scan(fname,'/',.true.)+1:)
+    file_content = IO_read(CLI_geomFile)
+    call result_openJobFile(parallel=.false.)
+    call result_addSetupFile(file_content,fname,'geometry definition (mesh solver)')
+    call result_closeJobFile()
+  end if
 
 end subroutine discretization_mesh_init
 
@@ -396,19 +413,19 @@ function build_volume_IP(dimPlex) result(v_0)
   PetscInt,    intent(in) :: dimPlex
 
   PetscReal      :: vol
-  PetscInt       :: cellStart, cellEnd, cell
+  PetscInt       :: cell_start, cell_end, cell
   PetscErrorCode :: err_PETSc
   PetscReal, pointer,dimension(:) :: pCent, pNorm
 
 
   allocate(v_0(mesh_maxNips,mesh_nElems),source=0.0_pREAL)
 
-  call DMPlexGetHeightStratum(geomMesh,0_pPETSCINT,cellStart,cellEnd,err_PETSc)
+  call DMPlexGetHeightStratum(geom,0_pPETSCINT,cell_start,cell_end,err_PETSc)
   CHKERRQ(err_PETSc)
   allocate(pCent(dimPlex))
   allocate(pNorm(dimPlex))
-  do cell = cellStart, cellEnd-1
-    call DMPlexComputeCellGeometryFVM(geomMesh,cell,vol,pCent,pNorm,err_PETSc)
+  do cell = cell_start, cell_end - 1_pPETSCINT
+    call DMPlexComputeCellGeometryFVM(geom,cell,vol,pCent,pNorm,err_PETSc)
     CHKERRQ(err_PETSc)
     v_0(:,cell+1) = vol/real(mesh_maxNips,pREAL)
   end do
@@ -426,7 +443,7 @@ function build_coordinates_IP(dimPlex,qPoints) result(x_p)
 #endif
 
   PetscInt,                                     intent(in) :: dimPlex
-#if (PETSC_VERSION_MINOR>=24)
+#if PETSC_VERSION_MINOR>=24
   PetscQuadrature,                              intent(in) :: quadrature
 #else
   PetscReal,   dimension(mesh_maxNips*dimPlex), intent(in) :: qPoints
@@ -434,29 +451,29 @@ function build_coordinates_IP(dimPlex,qPoints) result(x_p)
   real(pREAL), dimension(:,:,:), allocatable :: x_p
 
 
-#if (PETSC_VERSION_MINOR>=24)
+#if PETSC_VERSION_MINOR>=24
   PetscReal, pointer, dimension(:) :: pV0, pCellJ, pInvcellJ, pDetJ
 #else
   PetscReal, pointer, dimension(:) :: pV0, pCellJ, pInvcellJ
   PetscReal      :: detJ
   PetscInt       :: qPt, dirI, dirJ, qOffset
 #endif
-  PetscInt       :: cellStart, cellEnd, cell
+  PetscInt       :: cell_start, cell_end, cell
   PetscErrorCode :: err_PETSc
 
 
-  call DMPlexGetHeightStratum(geomMesh,0_pPETSCINT,cellStart,cellEnd,err_PETSc)
+  call DMPlexGetHeightStratum(geom,0_pPETSCINT,cell_start,cell_end,err_PETSc)
   CHKERRQ(err_PETSc)
 
   allocate(x_p(3,mesh_maxNips,mesh_nElems),source=0.0_pREAL)
-#if (PETSC_VERSION_MAJOR==3 && PETSC_VERSION_MINOR>=24)
+#if PETSC_VERSION_MINOR>=24
   allocate(pV0(mesh_maxNips*dimPlex))
   allocate(pCellJ(mesh_maxNips*dimPlex**2))
   allocate(pInvCellJ(mesh_maxNips*dimPlex**2))
   allocate(pDetJ(mesh_maxNips))
 
-  do cell = cellStart, cellEnd-1_pPETSCINT
-    call DMPlexComputeCellGeometryFEM(geomMesh,cell,quadrature,pV0,pCellJ,pInvCellJ,pDetJ,err_PETSc)
+  do cell = cell_start, cell_end - 1_pPETSCINT
+    call DMPlexComputeCellGeometryFEM(geom,cell,quadrature,pV0,pCellJ,pInvCellJ,pDetJ,err_PETSc)
     CHKERRQ(err_PETSc)
     x_p(1:dimPlex,1:mesh_maxNips,cell+1_pPETSCINT) = reshape(pV0,[dimPlex,mesh_maxNips])
   end do
@@ -465,10 +482,10 @@ function build_coordinates_IP(dimPlex,qPoints) result(x_p)
   allocate(pCellJ(dimPlex**2))
   allocate(pinvCellJ(dimPlex**2))
 
-  do cell = cellStart, cellEnd - 1_pPETSCINT                                                        ! loop over all elements
-    call DMPlexComputeCellGeometryAffineFEM(geomMesh,cell,pV0,pCellJ,pInvcellJ,detJ,err_PETSc)
+  do cell = cell_start, cell_end - 1_pPETSCINT                                                      ! loop over all elements
+    call DMPlexComputeCellGeometryAffineFEM(geom,cell,pV0,pCellJ,pInvcellJ,detJ,err_PETSc)
     CHKERRQ(err_PETSc)
-    qOffset = 0
+    qOffset = 0_pPETSCINT
     do qPt = 1_pPETSCINT, mesh_maxNips
       do dirI = 1_pPETSCINT, dimPlex
         x_p(dirI,qPt,cell+1) = pV0(dirI)
@@ -486,7 +503,7 @@ end function build_coordinates_IP
 
 
 !--------------------------------------------------------------------------------------------------
-!> @brief Get mesh node coordinates and element connectivity matrix.
+!> @brief Get mesh node coordinates and build element connectivity matrix.
 !--------------------------------------------------------------------------------------------------
 #if (PETSC_VERSION_MINOR>24 || (PETSC_VERSION_MINOR==24 && PETSC_VERSION_SUBMINOR>=1))
 subroutine build_nodes_and_connectivity(x_n, T_e, p_s)
@@ -494,163 +511,131 @@ subroutine build_nodes_and_connectivity(x_n, T_e, p_s)
 subroutine build_nodes_and_connectivity(x_n, p_s)
 #endif
 
-  real(pREAL), dimension(:,:), allocatable, intent(out) :: &
-    x_n                                                                                             !< mesh nodes coordinates (including high-order approximation)
+  real(pREAL), dimension(:,:), allocatable, intent(out) :: x_n                                      !< mesh nodes coordinates (including high-order approximation)
 #if (PETSC_VERSION_MINOR>24 || (PETSC_VERSION_MINOR==24 && PETSC_VERSION_SUBMINOR>=1))
-  PetscInt,    dimension(:,:), allocatable, intent(out) :: &
-    T_e                                                                                             !< element connectivity (node numbers in each cell)
+  PetscInt,    dimension(:,:), allocatable, intent(out) :: T_e                                      !< element connectivity (node numbers in each cell)
 #endif
-  PetscInt, intent(in) :: &
-    p_s                                                                                             !< order of approximation space
+  PetscInt,                                 intent(in)  :: p_s                                      !< order of approximation space
 
-  DM       :: coordDM                                                                               ! approximation space DM
-  Vec      :: coordVec                                                                              ! local nodes coordinates
-  PetscInt :: coordDim,    &                                                                        ! DOF-per-node
-              nLocalNodes, &                                                                        ! local number of nodes
-              nCellNodes,  &                                                                        ! number of nodes in a cell
-              feDim,       &                                                                        ! DOF per cell (nNodes x DOF per node)
-              feBasis,     &
-              cellStart, cellEnd, cell
-  PetscDS  :: coordDS
-  PetscFE  :: coordFE
-  PetscSection    :: globalSection, localSection                                                    ! section (to retrieve DOF)
-#if (PETSC_VERSION_MAJOR==3 && PETSC_VERSION_MINOR>=24)
+  Vec      :: coords_vec                                                                            ! local nodes coordinates
+  PetscInt :: dimPlex, &                                                                            ! DoF per node
+              n_nodes, &                                                                            ! (local) number of nodes
+              n_cell_nodes, &                                                                       ! number of nodes per cell
+              FE_dim, &                                                                             ! DoF per cell (n_nodes x DoF per node)
+              cell_start, cell_end, &                                                               ! (local) first & last+1 cell number
+              cell, basis                                                                           ! loop
+  PetscDS  :: DS
+  PetscFE  :: FE
+#if PETSC_VERSION_MINOR>22
+  PetscObject     :: FE_obj
+#endif
+  PetscSection    :: global_section, local_section                                                  ! section (to retrieve DoF)
+#if PETSC_VERSION_MINOR>=24
   DMPolytopeType  :: cell_type                                                                      ! tri, quad, tet, hex
 #endif
-  PetscDualSpace  :: coordDualSpace
-  PetscQuadrature :: refQuadrature
-  PetscErrorCode  :: err_PETSc, ierr
-
+  PetscDualSpace  :: dual_space                                                                     ! FE dual space
+  PetscQuadrature :: quadrature                                                                     ! functional from dual space
+  PetscErrorCode  :: err_PETSc
   real(pREAL), dimension(:), pointer     :: coords, &                                               ! local nodes coordinates
-                                            nodeCoords                                              ! single node coordinates
-  real(pREAL), dimension(:), allocatable :: refCoords                                               ! node coordinates in reference element [-1,+1]^d
-#if (PETSC_VERSION_MAJOR==3 && PETSC_VERSION_MINOR>22)
-  real(pREAL), dimension(:), allocatable :: mappedCoords                                            ! real (mesh) node coordinates
+                                            node_coords                                             ! single node coordinates
+  real(pREAL), dimension(:), allocatable :: ref_coords                                              ! node coordinates in reference element [-1,+1]^d
+#if PETSC_VERSION_MINOR>22
+  real(pREAL), dimension(:), allocatable :: mapped_coords                                           ! real (mesh) node coordinates
 #else
-  real(pREAL), dimension(:), allocatable, target :: mappedCoords                                    ! real (mesh) node coordinates
-  real(pREAL), dimension(:), pointer     :: pMappedCoords, &
+  real(pREAL), dimension(:), allocatable, target :: mapped_coords                                   ! real (mesh) node coordinates
+  real(pREAL), dimension(:), pointer     :: mapped_coords_, &                                       ! pointer to mapped_coords
                                             PETSC_NULL_REAL_POINTER => NULL()
 #endif
 #if (PETSC_VERSION_MINOR>24 || (PETSC_VERSION_MINOR==24 && PETSC_VERSION_SUBMINOR>=1))
-  PetscInt,    dimension(:), pointer     :: indices                                                 ! cell closure DOF indices
+  PetscInt,    dimension(:), pointer     :: indices                                                 ! cell closure DoF indices
   integer,     dimension(:), allocatable :: node_map                                                ! PETSc to VTK node order mapping
 #endif
-#if (PETSC_VERSION_MAJOR==3 && PETSC_VERSION_MINOR>=24)
-  PetscBool :: isSimplex
-#endif
+  PetscInt :: dev_null_i1, dev_null_i2, dev_null_i3                                                 ! not needed after https://gitlab.com/petsc/petsc/-/commit/b59e0f5d4fcb03e82d68f162f04b63b31fb8d091
+  real(pREAL), dimension(:), pointer :: dev_null_r
 
 
-  call PetscOptionsInsertString(PETSC_NULL_OPTIONS, &
-                                '-coord_petscspace_degree ' // IO_intAsStr(int(p_s)) // ' &
-                                &-coord_petscdualspace_lagrange_node_type equispaced &
-                                &-coord_petscdualspace_lagrange_node_endpoints 1 ',  &
-                                err_PETSc)
+  call DMGetDimension(geom,dimPlex,err_PETSc)
   CHKERRQ(err_PETSc)
-  call DMClone(geomMesh, coordDM, err_PETSc)
+  call DMGetDS(geom,DS,err_PETSc)
   CHKERRQ(err_PETSc)
-  call DMSetFromOptions(coordDM, err_PETSc)
+#if PETSC_VERSION_MINOR>22
+  call PetscDSGetDiscretization(DS,0_pPETSCINT,FE_obj,err_PETSc)
   CHKERRQ(err_PETSc)
-  call DMGetDimension(coordDM, coordDim, err_PETSc)
-  CHKERRQ(err_PETSc)
-#if (PETSC_VERSION_MAJOR==3 && PETSC_VERSION_MINOR>=24)
-  call DMPlexIsSimplex(coordDM,isSimplex,err_PETSc)
-  CHKERRQ(err_PETSc)
-  call PetscFECreateDefault(PETSC_COMM_SELF, coordDim, coordDim, isSimplex, 'coord_', p_s, &
-                            coordFE, err_PETSc)
+  PetscObjectSpecificCast(FE,FE_obj)
 #else
-  call PetscFECreateDefault(PETSC_COMM_SELF, coordDim, coordDim, PETSC_TRUE, 'coord_', p_s, &
-                            coordFE, err_PETSc)
+  call PetscDSGetDiscretization(DS,0_pPETSCINT,FE,err_PETSc)
 #endif
+  call PetscFEGetDimension(FE,FE_dim,err_PETSc)
+  CHKERRQ(err_PETSc)
+  call PetscFEGetDualSpace(FE,dual_space,err_PETSc)
+  CHKERRQ(err_PETSc)
+  call PetscFEDestroy(FE,err_PETSc)
   CHKERRQ(err_PETSc)
 
-  call PetscFEGetDimension(coordFE, feDim, err_PETSc)
+  call DMGetGlobalSection(geom,global_section,err_PETSc)
   CHKERRQ(err_PETSc)
-#if (PETSC_VERSION_MAJOR==3 && PETSC_VERSION_MINOR>22)
-  call DMAddField(coordDM, PETSC_NULL_DMLABEL, PetscObjectCast(coordFE), err_PETSc)
-#else
-  call DMAddField(coordDM, PETSC_NULL_DMLABEL, coordFE, err_PETSc)
-#endif
+  call DMGetLocalSection(geom,local_section,err_PETSc)
   CHKERRQ(err_PETSc)
-
-  call DMCreateDS(coordDM, err_PETSc)
+  call DMCreateLocalVector(geom,coords_vec,err_PETSc)
   CHKERRQ(err_PETSc)
-  call DMGetDS(coordDM, coordDS, err_PETSc)
+  call DMPlexGetHeightStratum(geom,0_pPETSCINT,cell_start,cell_end,err_PETSc)
   CHKERRQ(err_PETSc)
 
-  call DMGetGlobalSection(coordDM, globalSection, err_PETSc)
-  CHKERRQ(err_PETSc)
-  call DMGetLocalSection(coordDM, localSection, err_PETSc)
-  CHKERRQ(err_PETSc)
-  call DMCreateLocalVector(coordDM, coordVec, err_PETSc)
-  CHKERRQ(err_PETSc)
-
-  call PetscFEGetDualSpace(coordFE, coordDualSpace, err_PETSc)
-  CHKERRQ(err_PETSc)
-  call PetscFEDestroy(coordFE, err_PETSc)
-  CHKERRQ(err_PETSc)
-  call DMPlexGetHeightStratum(coordDM, 0_pPETSCINT, cellStart, cellEnd, err_PETSc)
-  CHKERRQ(err_PETSc)
-
-  allocate(nodeCoords(coordDim))
-  allocate(refCoords(feDim))
-  allocate(mappedCoords(feDim))
-  nCellNodes = feDim / coordDim
-
-  do feBasis = 0_pPETSCINT, feDim-1_pPETSCINT, coordDim                                             ! coordinates in the reference cell in [-1,+1]^d
-    call PetscDualSpaceGetFunctional(coordDualSpace, feBasis, refQuadrature, err_PETSc)
+  allocate(ref_coords(FE_dim))
+  do basis = 0_pPETSCINT, FE_dim - 1_pPETSCINT, dimPlex                                             ! coordinates in the reference cell in [-1,+1]^d
+    call PetscDualSpaceGetFunctional(dual_space,basis,quadrature,err_PETSc)
     CHKERRQ(err_PETSc)
-#if (PETSC_VERSION_MAJOR==3 && PETSC_VERSION_MINOR>21)
-    call PetscQuadratureGetData(refQuadrature, coordDim, PETSC_NULL_INTEGER, PETSC_NULL_INTEGER, &
-#else
-    call PetscQuadratureGetData(refQuadrature, coordDim, PETSC_NULL_INTEGER(1), &
-                                PETSC_NULL_INTEGER(1), &
-#endif
-                                nodeCoords, PETSC_NULL_REAL_POINTER, err_PETSc)
+    call PetscQuadratureGetData(quadrature,dev_null_i1,dev_null_i2,dev_null_i3, &
+                                node_coords,dev_null_r,err_PETSc)
     CHKERRQ(err_PETSc)
-    refCoords(feBasis + 1:feBasis + coordDim) = nodeCoords
+    ref_coords(basis+1_pPETSCINT:basis+dimPlex) = node_coords
+    call PetscQuadratureRestoreData(quadrature,dev_null_i1,dev_null_i2,dev_null_i3, &
+                                    node_coords,dev_null_r,err_PETSc)
+    CHKERRQ(err_PETSc)
   end do
 
-  do cell = cellStart, cellEnd - 1_pPETSCINT                                                        ! map reference to real (mesh) coordinates
-    call DMPlexReferenceToCoordinates(coordDM, cell, nCellNodes, refCoords, &
-                                      mappedCoords, err_PETSc)
+  allocate(mapped_coords(FE_dim))
+  n_cell_nodes = FE_dim / dimPlex
+  do cell = cell_start, cell_end - 1_pPETSCINT                                                      ! map reference to real (mesh) coordinates
+    call DMPlexReferenceToCoordinates(geom,cell,n_cell_nodes,ref_coords,&
+                                      mapped_coords,err_PETSc)
     CHKERRQ(err_PETSc)
-#if (PETSC_VERSION_MINOR>22)
-    PetscCall(DMPlexVecSetClosure(coordDM, localSection, coordVec, cell, mappedCoords,INSERT_VALUES, ierr))
+#if PETSC_VERSION_MINOR>22
+    call DMPlexVecSetClosure(geom,local_section,coords_vec,cell,mapped_coords, &
 #else
-    pMappedCoords => mappedCoords
-    call DMPlexVecSetClosure(coordDM, localSection, coordVec, cell, pMappedCoords, &
-                             INSERT_VALUES, err_PETSc)
-    CHKERRQ(err_PETSc)
+    mapped_coords_ => mapped_coords
+    call DMPlexVecSetClosure(geom,local_section,coords_vec,cell,mapped_coords_, &
 #endif
+                             INSERT_VALUES,err_PETSc)
+    CHKERRQ(err_PETSc)
   end do
 
-  call VecGetArrayRead(coordVec,coords,err_PETSc)
-  nLocalNodes = size(coords) / coordDim
-  allocate(x_n(3, nLocalNodes), source = 0.0_pREAL)
-  x_n(1:coordDim, 1:nLocalNodes) = reshape(coords, [coordDim, nLocalNodes])
-  call VecRestoreArrayRead(coordVec, coords, err_PETSc)
+  call VecGetArrayRead(coords_vec,coords,err_PETSc)
+  n_nodes = size(coords)/dimPlex
+  allocate(x_n(3,n_nodes),source = 0.0_pREAL)
+  x_n(1:dimPlex,1:n_nodes) = reshape(coords,[dimPlex,n_nodes])
+  call VecRestoreArrayRead(coords_vec,coords,err_PETSc)
 
 #if (PETSC_VERSION_MINOR>24 || (PETSC_VERSION_MINOR==24 && PETSC_VERSION_SUBMINOR>=1))
-  PetscCall(DMPlexGetHeightStratum(coordDM, 0_pPETSCINT, cellStart, cellEnd, ierr))
-  PetscCall(DMPlexGetCellType(coordDM, cellStart, cell_type, ierr))
-  node_map = PETSc_to_VTK_node_order(cell_type, int(p_s))
+  call DMPlexGetHeightStratum(geom,0_pPETSCINT,cell_start,cell_end,err_PETSc)
+  CHKERRQ(err_PETSc)
+  call DMPlexGetCellType(geom,cell_start,cell_type,err_PETSc)
+  CHKERRQ(err_PETSc)
+  node_map = PETSc_to_VTK_node_order(cell_type,int(p_s))
 
-  allocate(T_e(nCellNodes, cellEnd - cellStart), source = -1_pPETSCINT)
-  do cell = cellStart, cellEnd - 1_pPETSCINT
-    call DMPlexGetClosureIndices(coordDM, localSection, globalSection, cell, PETSC_TRUE, &
-                                 PETSC_NULL_INTEGER, indices, PETSC_NULL_INTEGER_ARRAY, &
-                                 PETSC_NULL_REAL_POINTER, ierr)
-    CHKERRQ(ierr)
-    T_e(1:nCellNodes, cell + 1_pPETSCINT) = indices(coordDim * node_map - 1_pPETSCINT) / coordDim
-    call DMPlexRestoreClosureIndices(coordDM, localSection, globalSection, cell, PETSC_TRUE, &
-                                     PETSC_NULL_INTEGER, indices, PETSC_NULL_INTEGER_ARRAY, &
-                                     PETSC_NULL_REAL_POINTER, ierr)
-    CHKERRQ(ierr)
+  allocate(T_e(n_cell_nodes, cell_end - cell_start), source = -1_pPETSCINT)
+  do cell = cell_start,cell_end - 1_pPETSCINT
+    call DMPlexGetClosureIndices(geom,local_section,global_section,cell,PETSC_TRUE, &
+                                 PETSC_NULL_INTEGER,indices,PETSC_NULL_INTEGER_ARRAY, &
+                                 PETSC_NULL_REAL_POINTER,err_PETSc)
+    CHKERRQ(err_PETSc)
+    T_e(1_pPETSCINT:n_cell_nodes,cell+1_pPETSCINT) = indices(dimPlex*node_map-1_pPETSCINT)/dimPlex
+    call DMPlexRestoreClosureIndices(geom,local_section,global_section,cell,PETSC_TRUE, &
+                                     PETSC_NULL_INTEGER,indices,PETSC_NULL_INTEGER_ARRAY, &
+                                     PETSC_NULL_REAL_POINTER,err_PETSc)
+    CHKERRQ(err_PETSc)
   end do
 #endif
-
-  call DMDestroy(coordDM, err_PETSc)
-  CHKERRQ(err_PETSc)
 
 end subroutine build_nodes_and_connectivity
 
@@ -658,7 +643,7 @@ end subroutine build_nodes_and_connectivity
 !--------------------------------------------------------------------------------------------------
 !> @brief Map node order from PETSc to VTK.
 !--------------------------------------------------------------------------------------------------
-function PETSc_to_VTK_node_order(cell_type, order) result(mapping)
+function PETSc_to_VTK_node_order(cell_type,order) result(mapping)
 
   integer, allocatable, dimension(:) :: &
     mapping                                                                                         !< node mapping
@@ -687,15 +672,15 @@ function PETSc_to_VTK_node_order(cell_type, order) result(mapping)
       case (1)
         mapping = [  1,   2,   3,   4]
       case (2)
-        mapping = [  2,   3,   4,   5,   6,   7,   8,   9,   1]
+        mapping = [  6,   7,   8,   9,   2,   3,   4,   5,   1]
       case (3)
-        mapping = [  5,   6,   7,   8,   9,  10,  11,  12,  14,  13,  16,  15,   1,   2,   3,   4]
+        mapping = [  13, 14,  15,  16,   5,   6,   7,   8,  10,  9,  12,   11,  1,   2,   3,   4]
       case (4)
-        mapping = [ 10,  11,  12,  13,  14,  15,  16,  17,  18,  19,  22,  21,  20,  25,  24,  23, &
+        mapping = [ 22,  23,  24,  25,  10,  11,  12,  13,  14,  15,  18,  17,  16,  21,  20,  19, &
                      1,   2,   3,   4,   5,   6,   7,   8,   9]
       case (5)
-        mapping = [ 17,  18,  19,  20,  21,  22,  23,  24,  25,  26,  27,  28,  32,  31,  30,  29, &
-                    36,  35,  34,  33,   1,   2,   3,   4,   5,   6,   7,   8,   9,  10,  11,  12, &
+        mapping = [ 33,  34,  35,  36,  17,  18,  19,  20,  21,  22,  23,  24,  28,  27,  26,  25, &
+                    32,  31,  30,  29,   1,   2,   3,   4,   5,   6,   7,   8,   9,  10,  11,  12, &
                     13,  14,  15,  16]
     end select
   else if (cell_type == DM_POLYTOPE_TETRAHEDRON) then
@@ -720,35 +705,35 @@ function PETSc_to_VTK_node_order(cell_type, order) result(mapping)
   else if (cell_type == DM_POLYTOPE_HEXAHEDRON) then
     select case (order)
       case (1)
-        mapping = [  1,   2,   3,   4,   5,   6,   7,   8]
+        mapping = [  1,   4,   3,   2,   5,   6,   7,   8]
       case (2)
-        mapping = [  2,   3,   4,   5,   6,   7,   8,   9,  19,  18,  17,  16,  20,  21,  22,  23, &
-                    25,  24,  26,  27,  15,  14,  12,  13,  10,  11,   1]
+        mapping = [ 20,  23,  22,  21,  24,  25,  26,  27,  11,  10,   9,   8,  12,  13,  14,  15, &
+                    17,  16,  19,  18,   7,   6,   4,   5,   2,   3,   1]
       case (3)
-        mapping = [  9,  10,  11,  12,  13,  14,  15,  16,  48,  47,  46,  45,  43,  44,  41,  42, &
-                    49,  50,  51,  52,  54,  53,  56,  55,  60,  59,  57,  58,  61,  62,  64,  63, &
-                    37,  39,  38,  40,  33,  34,  35,  36,  25,  26,  27,  28,  30,  29,  32,  31, &
-                    17,  19,  18,  20,  21,  22,  23,  24,   1,   2,   3,   4,   5,   6,   7,   8]
+        mapping = [ 57,  60,  59,  58,  61,  62,  63,  64,  40,  39,  38,  37,  35,  36,  33,  34, &
+                    41,  42,  43,  44,  46,  45,  48,  47,  52,  51,  49,  50,  56,  55,  53,  54, &
+                    29,  31,  30,  32,  25,  26,  27,  28,  17,  18,  19,  20,  22,  21,  24,  23, &
+                     9,  11,  10,  12,  13,  14,  15,  16,   1,   2,   3,   4,   5,  6,   7,   8]
       case (4)
-        mapping = [ 28,  29,  30,  31,  32,  33,  34,  35, 101, 100,  99,  98,  97,  96,  93,  94, &
-                    95,  90,  91,  92, 102, 103, 104, 105, 106, 107, 110, 109, 108, 113, 112, 111, &
-                   119, 118, 117, 114, 115, 116, 120, 121, 122, 125, 124, 123,  81,  84,  87,  82, &
-                    85,  88,  83,  86,  89,  72,  73,  74,  75,  76,  77,  78,  79,  80,  54,  55, &
-                    56,  57,  58,  59,  60,  61,  62,  65,  64,  63,  68,  67,  66,  71,  70,  69, &
-                    36,  39,  42,  37,  40,  43,  38,  41,  44,  45,  46,  47,  48,  49,  50,  51, &
-                    52,  53,   1,   2,   3,   4,   5,   6,   7,   8,   9,  10,  11,  12,  13,  14, &
+        mapping = [118, 121, 120, 119, 122, 123, 124, 125,  93,  92,  91,  90,  89,  88,  85,  86, &
+                    87,  82,  83,  84,  94,  95,  96,  97,  98,  99, 102, 101, 100, 105, 104, 103, &
+                   111, 110, 109, 106, 107, 108, 117, 116, 115, 112, 113, 114,  73,  76,  79,  74, &
+                    77,  80,  75,  78,  81,  64,  65,  66,  67,  68,  69,  70,  71,  72,  46,  47, &
+                    48,  49,  50,  51,  52,  53,  54,  57,  56,  55,  60,  59,  58,  63,  62,  61, &
+                    28,  31,  34,  29,  32,  35,  30,  33,  36,  37,  38,  39,  40,  41,  42,  43, &
+                    44,  45,   1,   2,   3,   4,   5,   6,   7,   8,   9,  10,  11,  12,  13,  14, &
                     15,  16,  17,  18,  19,  20,  21,  22,  23,  24,  25,  26,  27]
       case (5)
-        mapping = [ 65,  66,  67,  68,  69,  70,  71,  72, 184, 183, 182, 181, 180, 179, 178, 177, &
-                   173, 174, 175, 176, 169, 170, 171, 172, 185, 186, 187, 188, 189, 190, 191, 192, &
-                   196, 195, 194, 193, 200, 199, 198, 197, 208, 207, 206, 205, 201, 202, 203, 204, &
-                   209, 210, 211, 212, 216, 215, 214, 213, 153, 157, 161, 165, 154, 158, 162, 166, &
-                   155, 159, 163, 167, 156, 160, 164, 168, 137, 138, 139, 140, 141, 142, 143, 144, &
-                   145, 146, 147, 148, 149, 150, 151, 152, 105, 106, 107, 108, 109, 110, 111, 112, &
-                   113, 114, 115, 116, 117, 118, 119, 120, 124, 123, 122, 121, 128, 127, 126, 125, &
-                   132, 131, 130, 129, 136, 135, 134, 133,  73,  77,  81,  85,  74,  78,  82,  86, &
-                    75,  79,  83,  87,  76,  80,  84,  88,  89,  90,  91,  92,  93,  94,  95,  96, &
-                    97,  98,  99, 100, 101, 102, 103, 104,   1,   2,   3,   4,   5,   6,   7,   8, &
+        mapping = [209, 212, 211, 210, 213, 214, 215, 216, 176, 175, 174, 173, 172, 171, 170, 169, &
+                   165, 166, 167, 168, 161, 162, 163, 164, 177, 178, 179, 180, 181, 182, 183, 184, &
+                   188, 187, 186, 185, 192, 191, 190, 189, 200, 199, 198, 197, 193, 194, 195, 196, &
+                   208, 207, 206, 205, 201, 202, 203, 204, 145, 149, 153, 157, 146, 150, 154, 158, &
+                   147, 151, 155, 159, 148, 152, 156, 160, 129, 130, 131, 132, 133, 134, 135, 136, &
+                   137, 138, 139, 140, 141, 142, 143, 144,  97,  98,  99, 100, 101, 102, 103, 104, &
+                   105, 106, 107, 108, 109, 110, 111, 112, 116, 115, 114, 113, 120, 119, 118, 117, &
+                   124, 123, 122, 121, 128, 127, 126, 125,  65,  69,  73,  77,  66,  70,  74,  78, &
+                    67,  71,  75,  79,  68,  72,  76,  80,  81,  82,  83,  84,  85,  86,  87,  88, &
+                    89,  90,  91,  92,  93,  94,  95,  96,   1,   2,   3,   4,   5,   6,   7,   8, &
                      9,  10,  11,  12,  13,  14,  15,  16,  17,  18,  19,  20,  21,  22,  23,  24, &
                     25,  26,  27,  28,  29,  30,  31,  32,  33,  34,  35,  36,  37,  38,  39,  40, &
                     41,  42,  43,  44,  45,  46,  47,  48,  49,  50,  51,  52,  53,  54,  55,  56, &

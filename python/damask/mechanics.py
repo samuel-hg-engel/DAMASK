@@ -5,13 +5,14 @@ Finite-strain continuum mechanics.
 All routines operate on numpy.ndarrays of shape (...,3,3).
 """
 
-from typing import Sequence as _Sequence, Union as _Union, Literal as _Literal
+from typing import Literal as _Literal
+from typing import Sequence as _Sequence
 
 import numpy as _np
 from numpy import typing as _npt
 
-from . import tensor as _tensor
 from . import _rotation
+from . import tensor as _tensor
 
 
 def deformation_Cauchy_Green_left(F: _npt.NDArray[_np.floating]) -> _npt.NDArray[_np.floating]:
@@ -483,7 +484,7 @@ def stretch_right(T: _npt.NDArray[_np.floating]) -> _npt.NDArray[_np.floating]:
 
 
 def _polar_decomposition(T: _npt.NDArray[_np.floating],
-                         requested: _Union[str, _Sequence[str]]) -> tuple:
+                         requested: str | _Sequence[str]) -> tuple:
     """
     Perform singular value decomposition.
 

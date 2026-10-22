@@ -1,24 +1,18 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
-import os
 import copy
-import numbers
-import multiprocessing as mp
+import os
 from functools import partial
-from typing import Optional, Union, Sequence
-from pathlib import Path
+from os import PathLike
+from typing import Sequence
 
-import numpy as np
-import pandas as pd
 import h5py
-from scipy import ndimage, spatial, interpolate
+import numpy as np
+import numpy.typing as npt
+import pandas as pd
+from scipy import interpolate, ndimage, spatial
 
-from . import VTK
-from . import util
-from . import grid_filters
-from . import Rotation
-from . import Table
-from . import Colormap
-from ._typehints import FloatSequence, IntSequence, NumpyRngSeed
+from . import VTK, Colormap, Rotation, Table, grid, util
+from ._typehints import FloatSequence, IntSequence, RNGLike, SeedLike
 
 
 class IcDict(dict):
@@ -36,7 +30,7 @@ class IcDict(dict):
         super().__init__()
         self.cells = cells
 
-    def __setitem__(self, k: str, v: Union[int, float, np.ndarray]):
+    def __setitem__(self, k: str, v: float | npt.NDArray[np.floating]):
         """
         Set a single initial condition key with validation and broadcasting.
 
@@ -44,14 +38,9 @@ class IcDict(dict):
         ----------
         k : str
             Name of the initial condition field.
-        v : int, float, or np.ndarray
-            Value to assign to the field. Allowed types and shapes:
-            - Scalars (`int` or `float`)
-              → broadcast to `cells`.
-            - Small arrays (`np.ndarray`) of shape (), (1,), or (3,)
-              → broadcast to `cells + value.shape`.
-            - Full-field arrays (`np.ndarray`) with leading dimensions matching `cells` and trailing shape (), (1,), or (3,)
-              → copied as-is.
+        v : float or np.ndarray
+            Value to assign to the field.
+            Scalars or vectors will be broadcasted.
 
         Raises
         ------
@@ -66,18 +55,13 @@ class IcDict(dict):
         and per-key assignment (`GeomGrid.initial_conditions[key] = value`), so all
         validation and broadcasting logic is centralized here.
         """
-        if not (    isinstance(v, numbers.Real)
-                or (isinstance(v, np.ndarray) and v.shape in [(), (1,), (3,)])
-                or (isinstance(v, np.ndarray) and len(v.shape) >= 3 and
-                    v.shape[:3] == self.cells and v.shape[3:] in [(), (1,), (3,)])
-               ):
+        if isinstance(v, np.ndarray) and v.shape not in [(), (1,), (3,),
+                                                         self.cells, self.cells+(1,), self.cells+(3,)]:
             raise ValueError(f'initial condition "{k}" must be [a field of] scalars or three-dimensional vectors')
+        super().__setitem__(k, (v if isinstance(v, np.ndarray) and v.ndim >= 3 and v.shape[:3] == self.cells else
+                                np.broadcast_to(v, self.cells + v.shape) if isinstance(v, np.ndarray) else
+                                np.broadcast_to(v, self.cells)).astype(float))
 
-        super().__setitem__(k,
-                            v if isinstance(v, np.ndarray) and len(v.shape) >= 3 and v.shape[:3] == self.cells else
-                            np.broadcast_to(v, self.cells + v.shape) if isinstance(v, np.ndarray) else
-                            np.broadcast_to(v, self.cells)
-                            )
 
 
 class GeomGrid:
@@ -85,17 +69,17 @@ class GeomGrid:
     Geometry definition for grid solvers.
 
     Create and manipulate geometry definitions for storage as VTK ImageData
-    files ('.vti' extension). A grid has a physical size, a coordinate origin,
-    and contains the material ID (indexing an entry in 'material.yaml')
-    as well as initial condition fields.
+    files ('.vti' extension). A grid has a physical size, a coordinate
+    origin, and contains the field of material IDs (indexing an entry in the
+    material configuration) as well as optional initial condition fields.
     """
 
     def __init__(self,
-                 material: np.ndarray,
+                 material: npt.NDArray[np.integer],
                  size: FloatSequence,
                  origin: FloatSequence = np.zeros(3),
-                 initial_conditions: Optional[dict[str,np.ndarray]] = None,
-                 comments: Union[None, str, Sequence[str]] = None):
+                 initial_conditions: dict[str,npt.NDArray[np.floating]] | None = None,
+                 comments: str | Sequence[str] | None = None):
         """
         New geometry definition for grid solvers.
 
@@ -139,7 +123,7 @@ class GeomGrid:
                f'origin: {util.srepr(self.origin,"   ")} m',
                f'# materials: {mat_N}' + ('' if mat_min == 0 and mat_max == mat_N-1 else
                                           f' (min: {mat_min}, max: {mat_max})')
-               ]+(['initial_conditions:']+[f'  - {f}'+(f' {data.shape[3:]}' if len(data.shape)>3 else '')
+               ]+(['initial_conditions:']+[f'  - {f}'+(f' {data.shape[3:]}' if data.ndim>3 else '')
                                            for f,data in self.initial_conditions.items()] if self.initial_conditions else []))
 
 
@@ -208,27 +192,29 @@ class GeomGrid:
 
 
     @property
-    def material(self) -> np.ndarray:
+    def material(self) -> npt.NDArray[np.integer]:
         """Material indices."""
         return self._material
 
     @material.setter
     def material(self,
-                 material: np.ndarray):
-        if len(material.shape) != 3:
+                 material: npt.NDArray[np.integer]):
+        if material.ndim != 3:
             raise ValueError(f'invalid material shape {material.shape}')
-        if material.dtype not in [np.float32,np.float64, np.int32,np.int64]:
+
+        if material.dtype in [np.float32,np.float64]:
+            if np.all(material == material.astype(np.int64).astype(material.dtype)):
+                self._material = material.astype(np.int64)
+            else:
+                raise ValueError('material data contains non-integers')
+        elif material.dtype in [np.int32,np.int64]:
+            self._material = np.copy(material)
+        else:
             raise TypeError(f'invalid material data type "{material.dtype}"')
-
-        self._material = np.copy(material)
-
-        if self.material.dtype in [np.float32,np.float64] and \
-           np.all(self.material == self.material.astype(np.int64).astype(float)):
-            self._material = self.material.astype(np.int64)
 
 
     @property
-    def size(self) -> np.ndarray:
+    def size(self) -> npt.NDArray[np.floating]:
         """Edge lengths of grid in meter."""
         return self._size
 
@@ -241,7 +227,7 @@ class GeomGrid:
         self._size = np.array(size,np.float64)
 
     @property
-    def origin(self) -> np.ndarray:
+    def origin(self) -> npt.NDArray[np.floating]:
         """Vector to grid origin in meter."""
         return self._origin
 
@@ -255,12 +241,12 @@ class GeomGrid:
 
 
     @property
-    def initial_conditions(self) -> dict[str, np.ndarray]:
+    def initial_conditions(self) -> dict[str, npt.NDArray[np.floating]]:
         """Fields of initial conditions."""
         return self._ic
 
     @initial_conditions.setter
-    def initial_conditions(self, ic: dict[str, np.ndarray]):
+    def initial_conditions(self, ic: dict[str, npt.NDArray[np.floating]]):
         """Set initial conditions, broadcasting to the cell grid shape if necessary."""
         if not isinstance(ic, dict):
             raise TypeError('initial conditions must be a dictionary')
@@ -271,7 +257,7 @@ class GeomGrid:
 
 
     @property
-    def cells(self) -> np.ndarray:
+    def cells(self) -> npt.NDArray[np.integer]:
         """Cell counts along x,y,z direction."""
         return np.asarray(self.material.shape)
 
@@ -282,8 +268,10 @@ class GeomGrid:
         return np.unique(self.material).size
 
 
-    @staticmethod
-    def _load(fname: Union[str, Path], label: str) -> 'GeomGrid':
+    @classmethod
+    def _load(cls,
+              fname: str | PathLike,
+              label: str) -> 'GeomGrid':
         """
         Load from VTK ImageData file.
 
@@ -305,15 +293,16 @@ class GeomGrid:
         bbox  = np.array(v.vtk_data.GetBounds()).reshape(3,2).T
         ic = {l:v.get(l).reshape(cells+v.get(l).shape[1:],order='F') for l in set(v.labels['Cell Data']) - {label}}
 
-        return GeomGrid(material = v.get(label).reshape(cells,order='F'),
-                        size     = bbox[1] - bbox[0],
-                        origin   = bbox[0],
-                        initial_conditions = ic,
-                        comments = v.comments,
-                       )
+        return cls(material = v.get(label).reshape(cells,order='F'),
+                   size     = bbox[1] - bbox[0],
+                   origin   = bbox[0],
+                   initial_conditions = ic,
+                   comments = v.comments,
+                  )
 
-    @staticmethod
-    def load(fname: Union[str, Path]) -> 'GeomGrid':
+    @classmethod
+    def load(cls,
+             fname: str | PathLike) -> 'GeomGrid':
         """
         Load from VTK ImageData file with material IDs stored as 'material'.
 
@@ -328,11 +317,12 @@ class GeomGrid:
         loaded : damask.GeomGrid
             Grid-based geometry from file.
         """
-        return GeomGrid._load(fname,'material')
+        return cls._load(fname,'material')
 
 
-    @staticmethod
-    def load_SPPARKS(fname: Union[str, Path]) -> 'GeomGrid':
+    @classmethod
+    def load_SPPARKS(cls,
+                     fname: str | PathLike) -> 'GeomGrid':
         """
         Load from SPPARKS VTK dump.
 
@@ -352,11 +342,12 @@ class GeomGrid:
         A SPPARKS VTI dump is equivalent to a DAMASK VTI file,
         but stores the materialID information as 'Spin' rather than 'material'.
         """
-        return GeomGrid._load(fname,'Spin')
+        return cls._load(fname,'Spin')
 
 
-    @staticmethod
-    def load_Neper(fname: Union[str, Path]) -> 'GeomGrid':
+    @classmethod
+    def load_Neper(cls,
+                   fname: str | PathLike) -> 'GeomGrid':
         """
         Load from Neper VTK file.
 
@@ -394,31 +385,32 @@ class GeomGrid:
         cells = np.array(v.vtk_data.GetDimensions())-1                                              # type: ignore[attr-defined]
         bbox  = np.array(v.vtk_data.GetBounds()).reshape(3,2).T
 
-        return GeomGrid(material = v.get('MaterialId').reshape(cells,order='F').astype('int32',casting='unsafe'),
-                        size     = bbox[1] - bbox[0],
-                        origin   = bbox[0],
-                        comments = util.execution_stamp('GeomGrid','load_Neper'),
-                       )
+        return cls(material = v.get('MaterialId').reshape(cells,order='F').astype('int32',casting='unsafe'),
+                   size     = bbox[1] - bbox[0],
+                   origin   = bbox[0],
+                   comments = util.execution_stamp('GeomGrid','load_Neper'),
+                  )
 
 
-    @staticmethod
-    def load_DREAM3D(fname: Union[str, Path],
-                     feature_IDs: Optional[str] = None,
-                     cell_data: Optional[str] = None,
+    @classmethod
+    def load_DREAM3D(cls,
+                     fname: str | PathLike,
+                     feature_IDs: str | None = None,
+                     cell_data: str | None = None,
                      phases: str = 'Phases',
                      Euler_angles: str = 'EulerAngles',
-                     base_group: Optional[str] = None) -> 'GeomGrid':
+                     base_group: str | None = None) -> 'GeomGrid':
         """
-        Load DREAM.3D (HDF5) file.
+        Load DREAM3D (HDF5) file.
 
-        Data in DREAM.3D files can be stored per cell ('CellData')
+        Data in DREAM3D files can be stored per cell ('CellData')
         and/or per grain ('Grain Data'). Per default, i.e. if
         'feature_IDs' is None, cell-wise data is assumed.
 
         Parameters
         ----------
         fname : str or pathlib.Path
-            Filename of the DREAM.3D (HDF5) file.
+            Filename of the DREAM3D (HDF5) file.
         feature_IDs : str, optional
             Name of the dataset containing the mapping between cells and
             grain-wise data. Defaults to 'None', in which case cell-wise
@@ -435,9 +427,10 @@ class GeomGrid:
             Euler angles in radians It is not used for grain-wise data, i.e.
             when feature_IDs is not None. Defaults to 'EulerAngles'.
         base_group : str, optional
-            Path to the group (folder) that contains geometry (_SIMPL_GEOMETRY),
+            Path to the group (folder) that contains geometry information,
             and grain- or cell-wise data. Defaults to None, in which case
-            it is set as the path that contains _SIMPL_GEOMETRY/SPACING.
+            it is set as the path that has a '_SPACING' attribute (file version
+            8.0) or contains '_SIMPL_GEOMETRY/SPACING' (file version 7.0).
 
         Returns
         -------
@@ -447,7 +440,7 @@ class GeomGrid:
         Notes
         -----
         A grain-wise geometry definition is based on segmented data from the
-        DREAM.3D file. This data is typically available when the microstructure
+        DREAM3D file. This data is typically available when the microstructure
         was synthetically created. In cell-wise representations, cells having
         the same orientation and phase are grouped. Since synthetically created
         microstructures have typically no in-grain scatter, cell-wise grids
@@ -461,17 +454,24 @@ class GeomGrid:
         is only obtained if the "grain_data" argument is used when calling
         damask.ConfigMaterial.load_DREAM3D.
 
-        Versions 8.0 and later of the DREAM.3D file format are not yet supported.
+        Versions 7.0 and 8.0 of the DREAM3D file format are supported.
         """
         with h5py.File(fname, 'r') as f:
-            if (file_version := util.version(f.attrs['FileVersion'].decode()+'.0')) > '7.0.0':
-                raise ValueError(f'DREAM.3D file format {file_version} is not supported')
-            b = util.DREAM3D_base_group(f) if base_group is None else base_group
-            c = util.DREAM3D_cell_data_group(f) if cell_data is None else cell_data
+            file_version = f.attrs['FileVersion'].decode()
+            if file_version != '7.0' and file_version != '8.0':
+                raise ValueError(f'DREAM3D file format {file_version} is not supported')
+            b = util.DREAM3D_base_group(f,file_version) if base_group is None else base_group
+            c = util.DREAM3D_cell_data_group(f,file_version) if cell_data is None else cell_data
 
-            cells  = f['/'.join([b,'_SIMPL_GEOMETRY','DIMENSIONS'])][()]
-            size   = f['/'.join([b,'_SIMPL_GEOMETRY','SPACING'])] * cells
-            origin = f['/'.join([b,'_SIMPL_GEOMETRY','ORIGIN'])][()]
+            match file_version:
+                case '8.0':
+                    cells  = f[b].attrs['_DIMENSIONS']
+                    size   = f[b].attrs['_SPACING'] * cells
+                    origin = f[b].attrs['_ORIGIN']
+                case '7.0':
+                    cells  = f['/'.join([b,'_SIMPL_GEOMETRY','DIMENSIONS'])][()]
+                    size   = f['/'.join([b,'_SIMPL_GEOMETRY','SPACING'])] * cells
+                    origin = f['/'.join([b,'_SIMPL_GEOMETRY','ORIGIN'])][()]
 
             if feature_IDs is None:
                 phase = f['/'.join([b,c,phases])][()].reshape(-1,1)
@@ -482,17 +482,18 @@ class GeomGrid:
             else:
                 ma = f['/'.join([b,c,feature_IDs])][()].flatten()
 
-        return GeomGrid(material = ma.reshape(cells,order='F'),
-                        size     = size,
-                        origin   = origin,
-                        comments = util.execution_stamp('GeomGrid','load_DREAM3D'),
-                       )
+        return cls(material = ma.reshape(cells,order='F'),
+                   size     = size,
+                   origin   = origin,
+                   comments = util.execution_stamp('GeomGrid','load_DREAM3D'),
+                  )
 
 
-    @staticmethod
-    def from_table(table: Table,
+    @classmethod
+    def from_table(cls,
+                   table: Table,
                    coordinates: str,
-                   labels: Union[str, Sequence[str]],
+                   labels: str | Sequence[str],
                    atol: float = 0.0) -> 'GeomGrid':
         """
         Create grid from ASCII table.
@@ -516,29 +517,24 @@ class GeomGrid:
         new : damask.GeomGrid
             Grid-based geometry from values in table.
         """
-        cells,size,origin = grid_filters.cellsSizeOrigin_coordinates0_point(table.get(coordinates),atol=atol)
+        cells,size,origin = grid.cellsSizeOrigin_coordinates0_point(table.get(coordinates),atol=atol)
 
         unique,inverse = table[labels].unique(return_inverse=True)
 
-        return GeomGrid(material = np.arange(len(unique))[inverse].reshape(cells,order='F'),
-                        size     = size,
-                        origin   = origin,
-                        comments = util.execution_stamp('GeomGrid','from_table'),
-                       )
+        return cls(material = np.arange(len(unique))[inverse].reshape(cells,order='F'),
+                   size     = size,
+                   origin   = origin,
+                   comments = util.execution_stamp('GeomGrid','from_table'),
+                  )
 
 
-    @staticmethod
-    def _find_closest_seed(seeds: np.ndarray,
-                           weights: np.ndarray,
-                           point: np.ndarray) -> np.integer:
-        return np.argmin(np.sum((np.broadcast_to(point,(len(seeds),3))-seeds)**2,axis=1) - weights)
-
-    @staticmethod
-    def from_Laguerre_tessellation(cells: IntSequence,
+    @classmethod
+    def from_Laguerre_tessellation(cls,
+                                   cells: IntSequence,
                                    size: FloatSequence,
-                                   seeds: np.ndarray,
+                                   seeds: npt.NDArray[np.floating],
                                    weights: FloatSequence,
-                                   material: Optional[IntSequence] = None,
+                                   material: IntSequence | None = None,
                                    periodic: bool = True):
         """
         Create grid from Laguerre tessellation.
@@ -553,8 +549,8 @@ class GeomGrid:
             Position of the seed points in meter. All points need
             to lay within the box [(0,0,0),size].
         weights : sequence of float, len (seeds.shape[0])
-            Weights of the seeds. Setting all weights to 1.0 gives a
-            standard Voronoi tessellation.
+            Weights of the seeds. Uniform weights result in Voronoi
+            tessellation.
         material : sequence of int, len (seeds.shape[0]), optional
             Material ID of the seeds.
             Defaults to None, in which case materials are consecutively numbered.
@@ -570,37 +566,33 @@ class GeomGrid:
         -----
         damask.seeds contains functionality for seed generation.
         """
-        weights_p: FloatSequence
+        coords = grid.coordinates0_point(cells,size).reshape(-1,3)
+        weights_ = np.asarray(weights)
+
         if periodic:
-            weights_p = np.tile(weights,27)                                                         # Laguerre weights (1,2,3,1,2,3,...,1,2,3)
-            seeds_p = np.vstack((seeds  -np.array([size[0],0.,0.]),seeds,  seeds  +np.array([size[0],0.,0.])))
-            seeds_p = np.vstack((seeds_p-np.array([0.,size[1],0.]),seeds_p,seeds_p+np.array([0.,size[1],0.])))
-            seeds_p = np.vstack((seeds_p-np.array([0.,0.,size[2]]),seeds_p,seeds_p+np.array([0.,0.,size[2]])))
+            max_extra = np.sqrt(weights_.max() - weights_.min())
+            sentinel = np.sqrt(4 * np.sum(np.asarray(size)**2) + max_extra**2) + max_extra + 1e-6
+            boxsize = np.append(size, sentinel)
         else:
-            weights_p = np.array(weights,float)
-            seeds_p   = seeds
+            boxsize = None
 
-        coords = grid_filters.coordinates0_point(cells,size).reshape(-1,3)
+        tree = spatial.KDTree(np.column_stack((seeds, np.sqrt(weights_.max() - weights_))),
+                              boxsize=boxsize)
+        material_ = np.asarray(tree.query(np.column_stack((coords, np.zeros(len(coords)))),
+                                          workers=int(os.environ.get('OMP_NUM_THREADS',4)))[1]).reshape(cells)
 
-        pool = mp.Pool(int(os.environ.get('OMP_NUM_THREADS',4)))
-        result = pool.map_async(partial(GeomGrid._find_closest_seed,seeds_p,weights_p), coords)
-        pool.close()
-        pool.join()
-        material_ = np.array(result.get()).reshape(cells)
-
-        if periodic: material_ %= len(weights)
-
-        return GeomGrid(material = material_ if material is None else np.array(material)[material_],
-                        size     = size,
-                        comments = util.execution_stamp('GeomGrid','from_Laguerre_tessellation'),
-                       )
+        return cls(material = material_ if material is None else np.array(material)[material_],
+                   size     = size,
+                   comments = util.execution_stamp('GeomGrid','from_Laguerre_tessellation'),
+                  )
 
 
-    @staticmethod
-    def from_Voronoi_tessellation(cells: IntSequence,
+    @classmethod
+    def from_Voronoi_tessellation(cls,
+                                  cells: IntSequence,
                                   size: FloatSequence,
-                                  seeds: np.ndarray,
-                                  material: Optional[IntSequence] = None,
+                                  seeds: npt.NDArray[np.floating],
+                                  material: IntSequence | None = None,
                                   periodic: bool = True) -> 'GeomGrid':
         """
         Create grid from Voronoi tessellation.
@@ -646,14 +638,14 @@ class GeomGrid:
         origin: 0.0   0.0   0.0 m
         # materials: 3
         """
-        coords = grid_filters.coordinates0_point(cells,size).reshape(-1,3)
+        coords = grid.coordinates0_point(cells,size).reshape(-1,3)
         tree = spatial.KDTree(seeds,boxsize=np.asarray(size) if periodic else None)
-        material_ = tree.query(coords, workers = int(os.environ.get('OMP_NUM_THREADS',4)))[1]
+        material_ = np.asarray(tree.query(coords, workers = int(os.environ.get('OMP_NUM_THREADS',4)))[1])
 
-        return GeomGrid(material = (material_ if material is None else np.array(material)[material_]).reshape(cells),
-                        size     = size,
-                        comments = util.execution_stamp('GeomGrid','from_Voronoi_tessellation'),
-                       )
+        return cls(material = (material_ if material is None else np.array(material)[material_]).reshape(cells),
+                   size     = size,
+                   comments = util.execution_stamp('GeomGrid','from_Voronoi_tessellation'),
+                  )
 
 
     _minimal_surface = \
@@ -698,8 +690,9 @@ class GeomGrid:
       }
 
 
-    @staticmethod
-    def from_minimal_surface(cells: IntSequence,
+    @classmethod
+    def from_minimal_surface(cls,
+                             cells: IntSequence,
                              size: FloatSequence,
                              surface: str,
                              threshold: float = 0.0,
@@ -783,14 +776,14 @@ class GeomGrid:
                             periods*2.0*np.pi*(np.arange(cells[1])+0.5)/cells[1],
                             periods*2.0*np.pi*(np.arange(cells[2])+0.5)/cells[2],
                             indexing='ij',sparse=True)
-        return GeomGrid(material = np.where(threshold < GeomGrid._minimal_surface[surface](x,y,z),materials[1],materials[0]),
-                        size     = size,
-                        comments = util.execution_stamp('GeomGrid','from_minimal_surface'),
-                       )
+        return cls(material = np.where(threshold < cls._minimal_surface[surface](x,y,z),materials[1],materials[0]),
+                   size     = size,
+                   comments = util.execution_stamp('GeomGrid','from_minimal_surface'),
+                  )
 
 
     def save(self,
-             fname: Union[str, Path],
+             fname: str | PathLike,
              compress: bool = True):
         """
         Save as VTK ImageData file.
@@ -814,7 +807,7 @@ class GeomGrid:
 
 
     def show(self,
-             colormap: Union[Colormap, str] = 'cividis') -> None:
+             colormap: Colormap | str = 'cividis') -> None:
         """
         Show on screen.
 
@@ -829,9 +822,9 @@ class GeomGrid:
 
 
     def canvas(self,
-               cells: Optional[IntSequence] = None,
-               offset: Optional[IntSequence] = None,
-               fill: Optional[int] = None) -> 'GeomGrid':
+               cells: IntSequence | None = None,
+               offset: IntSequence | None = None,
+               fill: int | None = None) -> 'GeomGrid':
         """
         Crop or enlarge/pad grid.
 
@@ -941,7 +934,7 @@ class GeomGrid:
         if not set(directions).issubset(valid):
             raise ValueError(f'invalid direction "{set(directions).difference(valid)}" specified')
 
-        limits: Sequence[Optional[int]] = [None,None] if reflect else [-2,0]
+        limits: Sequence[int | None] = [None,None] if reflect else [-2,0]
         selection = (slice(limits[0],limits[1],-1),slice(None),slice(None))
         mat = self.material.copy()
         ic = self.initial_conditions.copy()
@@ -1003,21 +996,18 @@ class GeomGrid:
         if not set(directions).issubset(valid):
             raise ValueError(f'invalid direction "{set(directions).difference(valid)}" specified')
 
-        mat = np.flip(self.material, [valid.index(d) for d in directions if d in valid])
-        ic = {}
-        for label in self.initial_conditions:
-            ic[label] = np.flip(self.initial_conditions[label],[valid.index(d) for d in directions if d in valid])
-        return GeomGrid(material = mat,
+        directions_ = tuple([valid.index(d) for d in directions if d in valid])
+        return GeomGrid(material = np.flip(self.material, directions_),
                         size     = self.size,
                         origin   = self.origin,
-                        initial_conditions = ic,
+                        initial_conditions = {label:np.flip(ic, directions_) for label,ic in self.initial_conditions.items()},
                         comments = self.comments+[util.execution_stamp('GeomGrid','flip')],
                        )
 
 
     def rotate(self,
                R: Rotation,
-               fill: Optional[int] = None) -> 'GeomGrid':
+               fill: int | None = None) -> 'GeomGrid':
         """
         Rotate grid (possibly extending its bounding box).
 
@@ -1056,10 +1046,12 @@ class GeomGrid:
         material = self.material
         # These rotations are always applied in the reference coordinate system, i.e. (z,x,z) not (z,x',z'')
         # see https://www.cs.utexas.edu/~theshark/courses/cs354/lectures/cs354-14.pdf
-        for angle,axes in zip(R.as_Euler_angles(degrees=True)[::-1], [(0,1),(1,2),(0,1)]):
-            material_temp = ndimage.rotate(material,angle,axes,order=0,prefilter=False,
+        for angle,axes in zip(np.flip(R.as_Euler_angles(degrees=True)), [(0,1),(1,2),(0,1)]):
+            material_temp = ndimage.rotate(material,angle,axes,
                                            output=self.material.dtype,
-                                           cval=np.nanmax(self.material) + 1 if fill is None else fill)
+                                           order=0,
+                                           cval=np.nanmax(self.material) + 1 if fill is None else fill,
+                                           prefilter=False)                                         # type: ignore[call-overload]
             # avoid scipy interpolation errors for rotations close to multiples of 90°
             material = material_temp if np.prod(material_temp.shape) != np.prod(material.shape) else \
                        np.rot90(material,k=np.rint(angle/90.).astype(np.int64),axes=axes)
@@ -1110,7 +1102,7 @@ class GeomGrid:
                                      self.origin + self.size - self.size/self.cells*.5,self.cells))
         interpolator = partial(interpolate.RegularGridInterpolator,
                                points=orig,method='nearest',bounds_error=False,fill_value=None)
-        new = grid_filters.coordinates0_point(cells,self.size,self.origin)
+        new = grid.coordinates0_point(cells,self.size,self.origin)
 
         return GeomGrid(material = interpolator(values=self.material)(new).astype(int),
                         size     = self.size,
@@ -1122,7 +1114,7 @@ class GeomGrid:
 
 
     def assemble(self,
-                 idx: np.ndarray) -> 'GeomGrid':
+                 idx: npt.NDArray[np.integer]) -> 'GeomGrid':
         """
         Assemble new grid from index map.
 
@@ -1138,7 +1130,7 @@ class GeomGrid:
             Cell count of resulting grid matches shape of index map.
         """
         cells = idx.shape[:3]
-        flat = (idx if len(idx.shape)==3 else grid_filters.ravel_index(idx)).flatten(order='F')
+        flat = (idx if idx.ndim==3 else grid.ravel_index(idx)).flatten(order='F')
         ic = {k: v.reshape((-1,)+v.shape[3:],order='F')[flat]
                   .reshape(cells+v.shape[3:],order='F') for k,v in self.initial_conditions.items()}
 
@@ -1170,8 +1162,8 @@ class GeomGrid:
 
 
     def substitute(self,
-                   from_material: Union[int,IntSequence],
-                   to_material: Union[int,IntSequence]) -> 'GeomGrid':
+                   from_material: int | IntSequence,
+                   to_material: int | IntSequence) -> 'GeomGrid':
         """
         Substitute material indices.
 
@@ -1225,10 +1217,10 @@ class GeomGrid:
 
     def clean(self,
               distance: float = np.sqrt(3),
-              selection: Optional[IntSequence] = None,
+              selection: IntSequence | None = None,
               invert_selection: bool = False,
               periodic: bool = True,
-              rng_seed: Optional[NumpyRngSeed] = None) -> 'GeomGrid':
+              rng: RNGLike | SeedLike | None = None) -> 'GeomGrid':
         """
         Smooth grid by selecting most frequent material ID within given stencil at each location.
 
@@ -1243,9 +1235,11 @@ class GeomGrid:
             Consider all material IDs except those in selection. Defaults to False.
         periodic : bool, optional
             Assume grid to be periodic. Defaults to True.
-        rng_seed : {None, int, array_like[ints], SeedSequence, BitGenerator, Generator}, optional
-            A seed to initialize the BitGenerator. Defaults to None.
-            If None, then fresh, unpredictable entropy will be pulled from the OS.
+        rng : numpy.random.Generator, optional
+            Pseudorandom number generator state. When rng is None, a new
+            numpy.random.Generator is created using entropy from the operating
+            system. Types other than numpy.random.Generator are passed to
+            numpy.random.default_rng to instantiate a ``Generator``.
 
         Returns
         -------
@@ -1256,8 +1250,8 @@ class GeomGrid:
         -----
         If multiple material IDs are most frequent within a stencil, a random choice is taken.
         """
-        def most_frequent(stencil: np.ndarray,
-                          selection: Union[None,np.ndarray],
+        def most_frequent(stencil: npt.NDArray[np.floating],
+                          selection: npt.NDArray[np.integer] | None,
                           rng: np.random.Generator):
             me = stencil[stencil.size//2]
             if selection is None or me in selection:
@@ -1266,7 +1260,7 @@ class GeomGrid:
             else:
                 return me
 
-        rng = np.random.default_rng(rng_seed)
+        rng = np.random.default_rng(rng)
 
         d = np.floor(distance).astype(np.int64)
         ext = np.linspace(-d,d,1+2*d,dtype=float),
@@ -1291,10 +1285,10 @@ class GeomGrid:
 
 
     def add_primitive(self,
-                      dimension: Union[FloatSequence, IntSequence],
-                      center: Union[FloatSequence, IntSequence],
-                      exponent: Union[FloatSequence, float],
-                      fill: Optional[int] = None,
+                      dimension: FloatSequence | IntSequence,
+                      center: FloatSequence | IntSequence,
+                      exponent: FloatSequence | float,
+                      fill: int | None = None,
                       R: Rotation = Rotation(),
                       inverse: bool = False,
                       periodic: bool = True) -> 'GeomGrid':
@@ -1374,10 +1368,10 @@ class GeomGrid:
         c = (np.array(center) + .5)*self.size/self.cells if np.issubdtype(np.array(center).dtype,   np.integer) else \
             (np.array(center) - self.origin)
 
-        coords = grid_filters.coordinates0_point(self.cells,self.size,
-                                          -(0.5*(self.size + (self.size/self.cells
-                                                              if np.issubdtype(np.array(center).dtype,np.integer) else
-                                                              0)) if periodic else c))
+        coords = grid.coordinates0_point(self.cells,self.size,
+                                         -(0.5*(self.size + (self.size/self.cells
+                                                             if np.issubdtype(np.array(center).dtype,np.integer) else
+                                                             0)) if periodic else c))
         coords_rot = R.broadcast_to(tuple(self.cells))@coords
 
         with np.errstate(all='ignore'):
@@ -1387,8 +1381,8 @@ class GeomGrid:
             mask = np.roll(mask,((c/self.size-0.5)*self.cells).round().astype(np.int64),(0,1,2))
 
         return GeomGrid(material = np.where(np.logical_not(mask) if inverse else mask,
-                                        self.material,
-                                        np.nanmax(self.material)+1 if fill is None else fill),
+                                            self.material,
+                                            np.nanmax(self.material)+1 if fill is None else fill),
                         size     = self.size,
                         origin   = self.origin,
                         initial_conditions = self.initial_conditions,
@@ -1398,8 +1392,8 @@ class GeomGrid:
 
     def vicinity_offset(self,
                         distance: float = np.sqrt(3),
-                        offset: Optional[int] = None,
-                        selection: Optional[IntSequence] = None,
+                        offset: int | None = None,
+                        selection: IntSequence | None = None,
                         invert_selection: bool = False,
                         periodic: bool = True) -> 'GeomGrid':
         """
@@ -1430,35 +1424,24 @@ class GeomGrid:
         updated : damask.GeomGrid
             Updated grid-based geometry.
         """
-        @util.numba_njit_wrapper()
-        def tainted_neighborhood(stencil: np.ndarray,
-                                 selection: Optional[np.ndarray] = None):
-            me = stencil[stencil.size//2]
-            if selection is None:
-                return np.any(stencil != me)
-            elif not len(selection)==0:
-                for stencil_item in stencil:
-                    for selection_item in selection:
-                        if stencil_item==selection_item and selection_item!=me:
-                            return True
-            return False
         d = np.floor(distance).astype(np.int64)
         ext = np.linspace(-d,d,1+2*d,dtype=float),
         xx,yy,zz = np.meshgrid(ext,ext,ext)
         footprint = xx**2+yy**2+zz**2 <= distance**2+distance*1e-8
-        offset_ = np.nanmax(self.material)+1 if offset is None else offset
-        selection_ = None if selection is None else \
-                     np.setdiff1d(self.material,selection) if invert_selection else \
-                     np.intersect1d(self.material,selection)
 
-        mask = ndimage.generic_filter(self.material,
-                                      tainted_neighborhood,
-                                      footprint=footprint,
-                                      mode='wrap' if periodic else 'nearest',
-                                      extra_keywords=dict(selection=selection_),
-                                     )
+        if selection is None:
+            mask = ndimage.minimum_filter(self.material, footprint=footprint, mode='wrap' if periodic else 'nearest') != \
+                   ndimage.maximum_filter(self.material, footprint=footprint, mode='wrap' if periodic else 'nearest')
+        else:
+            mask = np.full_like(self.material, False, dtype=bool)
+            for s in np.setdiff1d(self.material,selection) if invert_selection else \
+                     np.intersect1d(self.material,selection):
+                s_mask = (self.material == s)
+                mask |= ndimage.maximum_filter(s_mask, footprint=footprint, mode='wrap' if periodic else 'nearest') & ~s_mask
 
-        return GeomGrid(material = np.where(mask, self.material + offset_,self.material),
+        return GeomGrid(material = np.where(mask,
+                                            self.material + (np.nanmax(self.material)+1 if offset is None else offset),
+                                            self.material),
                         size     = self.size,
                         origin   = self.origin,
                         initial_conditions = self.initial_conditions,
@@ -1506,5 +1489,5 @@ class GeomGrid:
             base_nodes = np.argwhere(mask.flatten(order='F')).reshape((-1,1))
             connectivity.append(np.block([base_nodes + o[i][k] for k in range(4)]))
 
-        coords = grid_filters.coordinates0_node(self.cells,self.size,self.origin).reshape((-1,3),order='F')
+        coords = grid.coordinates0_node(self.cells,self.size,self.origin).reshape((-1,3),order='F')
         return VTK.from_unstructured_grid(coords,np.vstack(connectivity),'QUADRILATERAL')

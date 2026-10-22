@@ -13,7 +13,7 @@ def test_initial_eigenstrain(tmp_path,assert_allclose,np_rng):
       g = np.array([2,3,4])
       N = np.prod(g)
 
-      O_0 = damask.Rotation.from_random(N,rng_seed=np_rng)
+      O_0 = damask.Rotation.from_random(N,rng=np_rng)
       V_e_0 = damask.tensor.symmetric(np.broadcast_to(np.eye(3),(N,3,3))+ 0.05*(np_rng.random((N,3,3))-0.5))
 
       damask.GeomGrid(np.arange(N,dtype=int).reshape(g,order='F'),
@@ -42,11 +42,11 @@ def test_initial_eigenstrain(tmp_path,assert_allclose,np_rng):
            ['x','x', 0 ]]
 
       damask.YAML(solver={'mechanical':'spectral_basic'},
-                  loadstep=[{'boundary_conditions':{'mechanical':{'F':F,'P':P}},
+                  loadstep=[{'boundary_condition':{'mechanical':{'F':F,'P':P}},
                              'discretization':{'t':1.,'N':1}}])\
             .save(tmp_path/f'{load}.yaml')
 
-      damask.util.run(f'DAMASK_grid -l {load}.yaml -g {grid}.vti -m {material}.yaml -j {job}',wd=tmp_path)
+      damask.util.run(f'damask_grid -l {load}.yaml -g {grid}.vti -m {material}.yaml -j {job}',wd=tmp_path)
       r = damask.Result(tmp_path/f'{job}.hdf5').view(increments=0)
 
       F_e = r.get('F_e')

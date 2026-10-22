@@ -8,7 +8,7 @@
 !--------------------------------------------------------------------------------------------------
 module IO
   use, intrinsic :: ISO_C_binding
-  use, intrinsic :: ISO_fortran_env, only: &
+  use, intrinsic :: ISO_Fortran_env, only: &
     IO_STDOUT => OUTPUT_UNIT, &
     IO_STDERR => ERROR_UNIT, &
     IO_STDIN => INPUT_UNIT
@@ -16,12 +16,9 @@ module IO
   use prec
   use constants
   use misc
-#ifndef MARC_SOURCE
-  use OS
-#endif
-implicit none(type,external)
-  private
 
+  implicit none(type,external)
+  private
 
   interface
 #ifndef MARC_SOURCE
@@ -70,8 +67,8 @@ implicit none(type,external)
     IO_WHITESPACE = achar(44)//achar(32)//achar(9)//achar(10)//achar(13)                            !< whitespace characters
 
 #ifndef MARC_SOURCE
-    logical(C_BOOL), bind(C, name='IO_redirectedSTDOUT') :: IO_redirectedSTDOUT = .false.           !< STDOUT writes to file 'out.X' where X is the world rank
-    logical(C_BOOL), bind(C, name='IO_redirectedSTDERR') :: IO_redirectedSTDERR = .false.           !< STDERR writes to file 'err.X' where X is the world rank
+    logical(C_BOOL), bind(C, name='IO_redirectedSTDOUT'), public :: IO_redirectedSTDOUT = .false.   !< STDOUT writes to file 'out.X' where X is the world rank
+    logical(C_BOOL), bind(C, name='IO_redirectedSTDERR'), public :: IO_redirectedSTDERR = .false.   !< STDERR writes to file 'err.X' where X is the world rank
 #endif
    logical :: IO_colored = .true.                                                                   !< status of colored output
 
@@ -112,9 +109,13 @@ subroutine IO_init()
 #ifndef MARC_SOURCE
   ! redirection occurs in parallelization_init before any output is written
   inquire(unit=IO_STDOUT,name=fname)
-  IO_redirectedSTDOUT = logical(fname(:4) == 'out.',C_BOOL)
+  IO_redirectedSTDOUT = logical(index(fname,'out') /= 0 .and. &
+                                index(fname,'out.',back=.true.) == len_trim(fname)-7, &
+                                C_BOOL)
   inquire(unit=IO_STDERR,name=fname)
-  IO_redirectedSTDERR = logical(fname(:4) == 'err.',C_BOOL)
+  IO_redirectedSTDERR = logical(index(fname,'err') /= 0 .and. &
+                                index(fname,'err.',back=.true.) == len_trim(fname)-7,&
+                                C_BOOL)
 #endif
   call get_environment_variable('NO_COLOR',status=status)                                           !< https://no-color.org
   IO_colored = 0 /= status
@@ -253,11 +254,10 @@ end function IO_glueDiffering
 !--------------------------------------------------------------------------------------------------
 pure function IO_intAsStr(i)
 
-  integer, intent(in)            :: i
-  character(len=:), allocatable  :: IO_intAsStr
+  integer, intent(in) :: i
+  character(len=merge(2,1,i<0) + floor(log10(real(abs(merge(1,i,i==0)))))) :: IO_intAsStr
 
 
-  allocate(character(len=merge(2,1,i<0) + floor(log10(real(abs(merge(1,i,i==0))))))::IO_intAsStr)
   write(IO_intAsStr,'(i0)') i
 
 end function IO_intAsStr
@@ -266,16 +266,17 @@ end function IO_intAsStr
 !--------------------------------------------------------------------------------------------------
 !> @brief Return given float value as string.
 !--------------------------------------------------------------------------------------------------
-pure function IO_realAsStr(f)
+pure function IO_realAsStr(r)
 
-  real(pREAL), intent(in)        :: f
-  character(len=:), allocatable  :: IO_realAsStr
-  character(len=15)              :: tmp
+  real(pREAL), intent(in) :: r
+  character(len=:), allocatable :: IO_realAsStr
+
+  character(len=15) :: tmp
 
 
-  write(tmp,'(g15.7)') f
+  write(tmp,'(g15.7)') r
   tmp = adjustl(tmp)
-  allocate(IO_realAsStr,source=tmp(:len_trim(tmp)))
+  IO_realAsStr = tmp(:len_trim(tmp))
 
 end function IO_realAsStr
 
@@ -401,10 +402,6 @@ subroutine IO_error_new(error_ID, &
 ! lattice error messages
     case (130)
       msg = 'invalid crystal parameters'
-    case (132)
-      msg = 'invalid parameters for transformation'
-    case (137)
-      msg = 'not defined for lattice structure'
     case (138)
       msg = 'not enough interaction parameters given'
 
@@ -478,13 +475,7 @@ subroutine IO_error_new(error_ID, &
     case (603)
       msg = 'invalid data for table'
     case (610)
-      msg = 'missing value for command line flag'
-    case (611)
-      msg = 'invalid value for command line flag'
-    case (612)
-      msg = 'missing command line flag'
-    case (613)
-      msg = 'invalid command line flag'
+      msg = 'invalid command line options'
     case (640)
       msg = 'invalid working directory'
 
@@ -517,27 +508,12 @@ subroutine IO_error_new(error_ID, &
 
 !-------------------------------------------------------------------------------------------------
 ! errors related to the grid solver
-    case (831)
-      msg = 'mask consistency violated in grid load case'
-    case (833)
-      msg = 'non-positive ratio for geometric progression'
-    case (834)
-      msg = 'negative time increment in grid load case'
-    case (835)
-      msg = 'non-positive increments in grid load case'
-    case (836)
-      msg = 'non-positive result frequency in grid load case'
-    case (837)
-      msg = 'incomplete loadcase'
-    case (838)
-      msg = 'mixed boundary conditions allow rotation'
-    case (839)
-      msg = 'non-positive restart frequency in grid load case'
+    case (830)
+      msg = 'invalid load case'
     case (844)
       msg = 'invalid VTI file'
     case (894)
       msg = 'MPI error'
-
     case (950)
       msg = 'max number of cutbacks exceeded, terminating'
 
@@ -623,6 +599,20 @@ subroutine IO_warning(warning_ID, &
              emph)
 
 end subroutine IO_warning
+
+
+!--------------------------------------------------------------------------------------------------
+!> @brief C interface to IO_error_new taking a CFI character string.
+!--------------------------------------------------------------------------------------------------
+subroutine F_IO_error(error_ID, msg) bind(C, name='F_IO_error')
+
+  integer(C_INT), intent(in), value :: error_ID
+  character(kind=C_CHAR,len=*), intent(in) :: msg
+
+
+  call IO_error_new(int(error_ID,pI16), msg)
+
+end subroutine F_IO_error
 
 
 !--------------------------------------------------------------------------------------------------
@@ -712,7 +702,6 @@ subroutine IO_selfTest()
   if ('abc,'//IO_EOL//'xxdefg,'//IO_EOL//'xxhij' /= IO_wrapLines('abc,defg, hij',filler='xx',length=4)) &
                                                      error stop 'IO_wrapLines/7'
 
-#if ((defined(__INTEL_COMPILER) && __INTEL_COMPILER_BUILD_DATE < 20240000) || !defined(__INTEL_COMPILER))
   call tokenize('','$',tokens)
   if (size(tokens) /= 0 .or. len(tokens) /=0) error stop 'tokenize empty'
   call tokenize('abcd','dcba',tokens)
@@ -745,6 +734,9 @@ subroutine IO_selfTest()
 
   contains
   pure subroutine test_tokenize(input,delimiter,solution)
+#ifndef __GFORTRAN__
+    import, only: tokenize
+#endif
     character(len=*), intent(in) :: input, delimiter
     character(len=*), dimension(:), intent(in) :: solution
 
@@ -759,7 +751,6 @@ subroutine IO_selfTest()
     end do
 
   end subroutine test_tokenize
-#endif
 
 end subroutine IO_selfTest
 
@@ -770,22 +761,15 @@ end subroutine IO_selfTest
 !> @details exits the program and reports current time and duration. Exit code 0 signals
 !> everything is fine. Exit code 1 signals an error, message according to IO_error.
 !--------------------------------------------------------------------------------------------------
-subroutine quit(stop_id)
-  use, intrinsic :: ISO_fortran_env, only: ERROR_UNIT, OUTPUT_UNIT
+subroutine quit(stop_id) bind(C, name='quit')
 #include <petsc/finclude/petscsys.h>
   use PETScSys
-#ifndef PETSC_HAVE_MPI_F90MODULE_VISIBILITY
+#ifndef PETSC_EXPOSES_MPI
   use MPI_f08
 #endif
   use HDF5
 
-#ifndef PETSC_HAVE_MPI_F90MODULE_VISIBILITY
-  implicit none(type,external)
-#else
-  implicit none
-#endif
-
-  integer, intent(in) :: stop_id
+  integer, intent(in), value :: stop_id
 
   integer, dimension(8) :: date_time
   integer :: err_HDF5
@@ -793,15 +777,16 @@ subroutine quit(stop_id)
   PetscErrorCode :: err_PETSc
 
 
+  !$OMP SINGLE
   call H5Open_f(err_HDF5)                                                                           ! prevents error if not opened yet
-  if (err_HDF5 < 0) write(ERROR_UNIT,'(a,i0)') ' Error in H5Open_f ',err_HDF5
+  if (err_HDF5 < 0) write(IO_STDERR,'(a,i0)') ' Error in H5Open_f ',err_HDF5
   call H5Close_f(err_HDF5)
-  if (err_HDF5 < 0) write(ERROR_UNIT,'(a,i0)') ' Error in H5Close_f ',err_HDF5
+  if (err_HDF5 < 0) write(IO_STDERR,'(a,i0)') ' Error in H5Close_f ',err_HDF5
 
   call PetscFinalize(err_PETSc)
 
   call date_and_time(values = date_time)
-  write(OUTPUT_UNIT,'(/,a)') ' DAMASK terminated on:'
+  write(IO_STDOUT,'(/,a)') ' DAMASK terminated on:'
   print'(3x,a,1x,2(i2.2,a),i4.4)', 'Date:',date_time(3),'/',date_time(2),'/',date_time(1)
   print'(3x,a,1x,2(i2.2,a),i2.2)', 'Time:',date_time(5),':',date_time(6),':',date_time(7)
 
@@ -813,23 +798,25 @@ subroutine quit(stop_id)
     call MPI_Comm_size(MPI_COMM_WORLD,worldsize,err_MPI)
     if (err_MPI /= 0_MPI_INTEGER_KIND) error stop 'MPI_Comm error'
     if (stop_id /= 0 .and. worldsize > 1) call MPI_Abort(MPI_COMM_WORLD,1,err_MPI)
-    stop 1                                                                                          ! error (message from IO_error)
+    stop 1                                                                                          ! ToDo: return stop ID (needs to be < 125)
   endif
+  !$OMP END SINGLE
 
 end subroutine quit
 
+
 !--------------------------------------------------------------------------------------------------
-!> @brief Print C string to Fortran stdout.
+!> @brief C interface for printing a CFI character string.
 !--------------------------------------------------------------------------------------------------
-subroutine IO_printCppString(C_STR) bind(C, name='F_IO_printCppString')
+subroutine F_IO_print(msg) bind(C, name='F_IO_print')
 
-  character(kind=C_CHAR), intent(in), dimension(*) :: c_str
+  character(kind=C_CHAR,len=*), intent(in) :: msg
 
 
-  write (IO_STDOUT, '(a)', advance='no') c_f_string(c_str)
+  write(IO_STDOUT, '(a)', advance='no') msg
   flush(IO_STDOUT)
 
-end subroutine IO_printCppString
+end subroutine F_IO_print
 #endif
 
 
@@ -858,9 +845,10 @@ pure function CRLF2LF(str)
 
 end function CRLF2LF
 
-#if ((defined(__INTEL_COMPILER) && __INTEL_COMPILER_BUILD_DATE < 20240000) || !defined(__INTEL_COMPILER))
 !--------------------------------------------------------------------------------------------------
 !> @brief Fortran 2023 "tokenize" (first form, without optional argument).
+!> @details ifx has an implementation, but that is buggy:
+!>          https://community.intel.com/t5/Intel-Fortran-Compiler/segfault-in-tokenize/m-p/1759381#M179466
 !--------------------------------------------------------------------------------------------------
 pure subroutine tokenize(string,set,tokens)
 
@@ -884,7 +872,6 @@ pure subroutine tokenize(string,set,tokens)
   end do
 
 end subroutine tokenize
-#endif
 
 !--------------------------------------------------------------------------------------------------
 !> @brief Write statements to standard error.
@@ -908,9 +895,10 @@ subroutine panel(paneltype,ID,msg, &
              i
 
 
-  ! Needed to avoid output glitches observed with Gfortran.
-  ! see https://fortran-lang.discourse.group/t/openmp-and-thread-safety-of-i-os-write-read/4567/19
-  !$OMP CRITICAL (internal_IO)
+  ! Needed to avoid output glitches observed with GFortran.
+  ! see https://gcc.gnu.org/bugzilla/show_bug.cgi?id=113797
+  !     https://fortran-lang.discourse.group/t/openmp-and-thread-safety-of-i-os-write-read/4567
+  !$OMP CRITICAL (string_concatenation)
   heading = paneltype//' '//IO_intAsStr(ID)
 
   select case (paneltype)
@@ -933,7 +921,7 @@ subroutine panel(paneltype,ID,msg, &
             // as_str(info_7,is_emph(7,emph)) &
             // as_str(info_8,is_emph(8,emph)) &
             // as_str(info_9,is_emph(9,emph))
-  !$OMP END CRITICAL (internal_IO)
+  !$OMP END CRITICAL (string_concatenation)
 
   !$OMP CRITICAL (output_to_screen)
   write(IO_STDERR,'(/,a)')                ' ┌'       //DIVIDER//        '┐'

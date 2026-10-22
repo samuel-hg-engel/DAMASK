@@ -1,0 +1,16 @@
+---
+loadstep:
+  - boundary_condition:
+      mechanical:
+        - label: 'load'
+          n/a: ['x', 'x', 'x']  # placeholder
+        - label: 'fix_uvw'
+          u: [0.0, 0.0, 0.0]
+        - label: 'fix_u'
+          u: [0.0, 'x', 'x']
+        - label: 'fix_w'
+          u: ['x', 'x', 0.0]
+    discretization:
+      t: 1.0
+      N: 1
+    f_out: 1

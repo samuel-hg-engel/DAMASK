@@ -10,7 +10,7 @@ def res_path(res_path_base):
     return res_path_base/'thermal_isotropic'
 
 
-def test_thermal_isotropic(res_path,tmp_path,copy_files,np_rng):
+def test_thermal_isotropic(assert_allclose,res_path,tmp_path,copy_files,np_rng):
     grid = 'inclusion'
     load = 'no_deformation'
     material = 'material'
@@ -20,19 +20,20 @@ def test_thermal_isotropic(res_path,tmp_path,copy_files,np_rng):
     g.initial_conditions['T']=np.where(g.material==0,np_rng.random()*400,np_rng.random()*400)+200.
     g.save(tmp_path/f'{grid}.vti')
 
-    damask.util.run(f'DAMASK_grid -l {load}.yaml -g {grid}.vti -m {material}.yaml -j {grid}_{load} -n numerics.yaml',
+    damask.util.run(f'damask_grid -l {load}.yaml -g {grid}.vti -m {material}.yaml -j {grid}_{load} -n numerics.yaml',
                     wd=tmp_path)
     r_cube = damask.Result(tmp_path/f'{grid}_{load}.hdf5').place(['T','O']).values()
 
     m = damask.ConfigMaterial.load(tmp_path/f'{material}.yaml')
-    m['material'][0]['constituents'][0]['O'] = damask.Rotation.from_random(rng_seed=np_rng)
-    m['material'][1]['constituents'][0]['O'] = damask.Rotation.from_random(rng_seed=np_rng)
+    m['material'][0]['constituents'][0]['O'] = damask.Rotation.from_random(rng=np_rng)
+    m['material'][1]['constituents'][0]['O'] = damask.Rotation.from_random(rng=np_rng)
     m.save(tmp_path/f'{material}.yaml')
 
-    damask.util.run(f'DAMASK_grid -l {load}.yaml -g {grid}.vti -m {material}.yaml -j {grid}_{load} -n numerics.yaml',
+    damask.util.run(f'damask_grid -l {load}.yaml -g {grid}.vti -m {material}.yaml -j {grid}_{load} -n numerics.yaml',
                     wd=tmp_path)
     r_random = damask.Result(tmp_path/f'{grid}_{load}.hdf5').place(['T','O']).values()
 
     for cube,random in zip(r_cube,r_random):
-        assert (        np.allclose(cube['thermal'],random['thermal'])
-                and not np.allclose(cube['mechanical'],random['mechanical']))
+        assert_allclose(cube['thermal'],random['thermal'])
+        for O_cube,O_random in zip(cube['mechanical'].values(),random['mechanical'].values()):
+            assert not np.allclose(O_cube,O_random)

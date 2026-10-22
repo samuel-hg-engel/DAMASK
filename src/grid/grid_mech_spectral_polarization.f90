@@ -10,16 +10,16 @@
 module grid_mech_spectral_polarization                                                              ! "mechanics" => "mech": workaround for ifx
   use PETScDMDA
   use PETScSNES
-#ifndef PETSC_HAVE_MPI_F90MODULE_VISIBILITY
+#ifndef PETSC_EXPOSES_MPI
   use MPI_f08
 #endif
+  use HDF5
 
   use prec
   use parallelization
   use CLI
   use misc
   use IO
-  use HDF5
   use HDF5_utilities
   use math
   use rotations
@@ -30,7 +30,7 @@ module grid_mech_spectral_polarization                                          
   use discretization_grid
   use constants
 
-#ifndef PETSC_HAVE_MPI_F90MODULE_VISIBILITY
+#ifndef PETSC_EXPOSES_MPIF90
   implicit none(type,external)
 #else
   implicit none
@@ -88,7 +88,6 @@ module grid_mech_spectral_polarization                                          
     C_minMaxAvg = 0.0_pREAL, &                                                                      !< current (min+max)/2 stiffness
     C_minMaxAvgLastInc = 0.0_pREAL, &                                                               !< previous (min+max)/2 stiffness
     C_minMaxAvgRestart = 0.0_pREAL, &                                                              !< (min+max)/2 stiffnes (restart)
-    S = 0.0_pREAL, &                                                                                !< current compliance (filled up with zeros)
     C_scale = 0.0_pREAL, &
     S_scale = 0.0_pREAL
 
@@ -184,7 +183,7 @@ subroutine grid_mech_spectral_polarization_init(num_grid_mech)
   CHKERRQ(err_PETSc)
   call SNESSetOptionsPrefix(SNES_mech,'mechanical_',err_PETSc)
   CHKERRQ(err_PETSc)
-  call MPI_Allgather(int(cells3,pPetscInt),1_MPI_INTEGER_KIND,MPI_INTEGER,&
+  call MPI_Allgather(int(cells3,pPETSCINT),1_MPI_INTEGER_KIND,MPI_INTEGER,&
                      cells3_global,1_MPI_INTEGER_KIND,MPI_INTEGER,MPI_COMM_WORLD,err_MPI)
   call parallelization_chkerr(err_MPI)
   call DMDACreate3d(PETSC_COMM_WORLD, &
@@ -218,24 +217,16 @@ subroutine grid_mech_spectral_polarization_init(num_grid_mech)
   F     => FandF_tau(0: 8,:,:,:)
   F_tau => FandF_tau(9:17,:,:,:)
 
-  restartRead: if (CLI_restartInc > 0) then
+  restartRead: if (CLI_restartInc /= -1) then
     print '(/,1x,a,1x,i0)', 'loading restart data of increment', CLI_restartInc
 
     fileHandle  = HDF5_openFile(CLI_jobName//'_restart.hdf5','r')
     groupHandle = HDF5_openGroup(fileHandle,'solver')
 
     call HDF5_read(P_aim,groupHandle,'P_aim',.false.)
-    call MPI_Bcast(P_aim,9_MPI_INTEGER_KIND,MPI_DOUBLE,0_MPI_INTEGER_KIND,MPI_COMM_WORLD,err_MPI)
-    call parallelization_chkerr(err_MPI)
     call HDF5_read(F_aim,groupHandle,'F_aim',.false.)
-    call MPI_Bcast(F_aim,9_MPI_INTEGER_KIND,MPI_DOUBLE,0_MPI_INTEGER_KIND,MPI_COMM_WORLD,err_MPI)
-    call parallelization_chkerr(err_MPI)
     call HDF5_read(F_aim_lastinc,groupHandle,'F_aim_lastinc',.false.)
-    call MPI_Bcast(F_aim_lastinc,9_MPI_INTEGER_KIND,MPI_DOUBLE,0_MPI_INTEGER_KIND,MPI_COMM_WORLD,err_MPI)
-    call parallelization_chkerr(err_MPI)
-    call HDF5_read(F_aimDot,groupHandle,'F_aimDot',.false.)
-    call MPI_Bcast(F_aimDot,9_MPI_INTEGER_KIND,MPI_DOUBLE,0_MPI_INTEGER_KIND,MPI_COMM_WORLD,err_MPI)
-    call parallelization_chkerr(err_MPI)
+    call HDF5_read(F_aimDot,groupHandle,'F_aim_dot',.false.)
     call HDF5_read(temp33n,groupHandle,'F')
     F = reshape(temp33n,[9,cells(1),cells(2),cells3])
     call HDF5_read(temp33n,groupHandle,'F_lastinc')
@@ -258,17 +249,11 @@ subroutine grid_mech_spectral_polarization_init(num_grid_mech)
   call DMDAVecRestoreArray(DM_mech,FandF_tau_vec,FandF_tau,err_PETSc)                               ! deassociate pointer
   CHKERRQ(err_PETSc)
 
-  restartRead2: if (CLI_restartInc > 0) then
+  restartRead2: if (CLI_restartInc /= -1) then
     print '(1x,a,1x,i0)', 'loading additional restart data of increment', CLI_restartInc
-    call HDF5_read(C_volAvg,groupHandle,'C_volAvg',.false.)
-    call MPI_Bcast(C_volAvg,81_MPI_INTEGER_KIND,MPI_DOUBLE,0_MPI_INTEGER_KIND,MPI_COMM_WORLD,err_MPI)
-    call parallelization_chkerr(err_MPI)
-    call HDF5_read(C_volAvgLastInc,groupHandle,'C_volAvgLastInc',.false.)
-    call MPI_Bcast(C_volAvgLastInc,81_MPI_INTEGER_KIND,MPI_DOUBLE,0_MPI_INTEGER_KIND,MPI_COMM_WORLD,err_MPI)
-    call parallelization_chkerr(err_MPI)
-    call HDF5_read(C_minMaxAvg,groupHandle,'C_minMaxAvg',.false.)
-    call MPI_Bcast(C_minMaxAvg,81_MPI_INTEGER_KIND,MPI_DOUBLE,0_MPI_INTEGER_KIND,MPI_COMM_WORLD,err_MPI)
-    call parallelization_chkerr(err_MPI)
+    call HDF5_read(C_volAvg,groupHandle,'C_avg_vol',.false.)
+    call HDF5_read(C_volAvgLastInc,groupHandle,'C_avg_vol_lastinc',.false.)
+    call HDF5_read(C_minMaxAvg,groupHandle,'C_avg_minmax',.false.)
 
     call HDF5_closeGroup(groupHandle)
     call HDF5_closeFile(fileHandle)
@@ -302,7 +287,6 @@ function grid_mech_spectral_polarization_solution(incInfoIn) result(solution)
 
 !--------------------------------------------------------------------------------------------------
 ! update stiffness (and gamma operator)
-  S = utilities_maskedCompliance(params%rotation_BC,params%stress_mask,C_volAvg)
   if (num%update_gamma) then
     call utilities_updateGamma(C_minMaxAvg)
     C_scale = C_minMaxAvg
@@ -339,7 +323,7 @@ subroutine grid_mech_spectral_polarization_forward(cutBack,guess,Delta_t,Delta_t
     Delta_t_old, &
     Delta_t, &
     t_remaining                                                                                     !< remaining time of current load case
-  type(tBoundaryCondition), intent(in) :: &
+  type(tBCmech), intent(in) :: &
     stress_BC, &
     deformation_BC
   type(tRotation),           intent(in) :: &
@@ -370,7 +354,7 @@ subroutine grid_mech_spectral_polarization_forward(cutBack,guess,Delta_t,Delta_t
     if     (deformation_BC%myType=='L') then                                                        ! calculate F_aimDot from given L and current F
       F_aimDot = F_aimDot &
                + matmul(merge(.0_pREAL,deformation_BC%values,deformation_BC%mask),F_aim_lastinc)
-    elseif (deformation_BC%myType=='dot_F') then                                                    ! F_aimDot is prescribed
+    elseif (deformation_BC%myType=='F_dot') then                                                    ! F_aimDot is prescribed
       F_aimDot = F_aimDot &
                + merge(.0_pREAL,deformation_BC%values,deformation_BC%mask)
     elseif (deformation_BC%myType=='F') then                                                        ! aim at end of load case is prescribed
@@ -393,9 +377,9 @@ subroutine grid_mech_spectral_polarization_forward(cutBack,guess,Delta_t,Delta_t
 ! update average and local deformation gradients
   F_aim = F_aim_lastinc + F_aimDot * Delta_t
   if (stress_BC%myType=='P')     P_aim = P_aim &
-                                      + merge(.0_pREAL,(stress_BC%values - P_aim)/t_remaining,stress_BC%mask)*Delta_t
-  if (stress_BC%myType=='dot_P') P_aim = P_aim &
-                                      + merge(.0_pREAL,stress_BC%values,stress_BC%mask)*Delta_t
+                                       + merge(.0_pREAL,(stress_BC%values - P_aim)/t_remaining,stress_BC%mask)*Delta_t
+  if (stress_BC%myType=='P_dot') P_aim = P_aim &
+                                       + merge(.0_pREAL,stress_BC%values,stress_BC%mask)*Delta_t
 
   F = reshape(utilities_forwardTensorField(Delta_t,F_lastinc,Fdot, &                                ! estimate of F at end of time+Delta_t that matches rotated F_aim on average
                                            rotation_BC%rotate(F_aim,active=.true.)),&
@@ -476,10 +460,10 @@ subroutine grid_mech_spectral_polarization_restartWrite()
     call HDF5_write(P_aim,groupHandle,'P_aim',.false.)
     call HDF5_write(F_aim,groupHandle,'F_aim',.false.)
     call HDF5_write(F_aim_lastinc,groupHandle,'F_aim_lastinc',.false.)
-    call HDF5_write(F_aimDot,groupHandle,'F_aimDot',.false.)
-    call HDF5_write(C_volAvg,groupHandle,'C_volAvg',.false.)
-    call HDF5_write(C_volAvgLastInc,groupHandle,'C_volAvgLastInc',.false.)
-    call HDF5_write(C_minMaxAvgRestart,groupHandle,'C_minMaxAvg',.false.)
+    call HDF5_write(F_aimDot,groupHandle,'F_aim_dot',.false.)
+    call HDF5_write(C_volAvg,groupHandle,'C_avg_vol',.false.)
+    call HDF5_write(C_volAvgLastInc,groupHandle,'C_avg_vol_lastinc',.false.)
+    call HDF5_write(C_minMaxAvgRestart,groupHandle,'C_avg_minmax',.false.)
     call HDF5_closeGroup(groupHandle)
     call HDF5_closeFile(fileHandle)
   end if
@@ -544,11 +528,7 @@ end subroutine converged
 subroutine form_residual(residual_subdomain, FandF_tau, &
                          r, dummy,err_PETSc)
 
-#if PETSC_VERSION_MINOR<22
-  DMDALocalInfo, dimension(DMDA_LOCAL_INFO_SIZE) :: &
-#else
   DMDALocalInfo :: &
-#endif
     residual_subdomain
   real(pREAL), dimension(3,3,2,cells(1),cells(2),cells3), target, intent(in) :: &
     FandF_tau                                                                                       !< deformation gradient field
@@ -639,7 +619,8 @@ subroutine form_residual(residual_subdomain, FandF_tau, &
   end associate
 #endif
 
-  F_aim = F_aim - math_mul3333xx33(S, P_av - P_aim)                                                 ! S = 0.0 for no bc
+  F_aim = F_aim &
+        - utilities_defGradAdjustment(params%rotation_BC,params%stress_mask,C_volAvg,P_av - P_aim)
   err_BC = maxval(abs(merge(math_mul3333xx33(C_scale,F_aim-params%rotation_BC%rotate(F_av)), &
                             P_av-P_aim, &
                             params%stress_mask)))

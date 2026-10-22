@@ -3,16 +3,22 @@
 !> @author Martin Diehl, Max-Planck-Institut für Eisenforschung GmbH
 !> @author Philip Eisenlohr, Max-Planck-Institut für Eisenforschung GmbH
 !> @author Yi Hu, Max-Planck-Institut für Eisenforschung GmbH
+!> @author Tilak Raj Pant, Indian Institute of Science
 !> @brief Utilities used by the different spectral solver variants
 !--------------------------------------------------------------------------------------------------
 #include <petsc/finclude/petscsys.h>
+#if defined(PETSC_EXPOSES_MPIF90)
+#define MPI_COMM_WORLD_F90 MPI_COMM_WORLD
+#else
+#define MPI_COMM_WORLD_F90 MPI_COMM_WORLD%MPI_val
+#endif
 module spectral_utilities
   use PETScSys
-#ifndef PETSC_HAVE_MPI_F90MODULE_VISIBILITY
+#ifndef PETSC_EXPOSES_MPI
   use MPI_f08
 #endif
-  use FFTW3
 
+  use FFTW3
   use prec
   use CLI
   use parallelization
@@ -24,8 +30,7 @@ module spectral_utilities
   use discretization
   use homogenization
 
-
-#ifndef PETSC_HAVE_MPI_F90MODULE_VISIBILITY
+#ifndef PETSC_EXPOSES_MPIF90
   implicit none(type,external)
 #else
   implicit none
@@ -52,10 +57,10 @@ module spectral_utilities
   complex(C_DOUBLE_COMPLEX), dimension(:,:,:),         pointer     :: scalarField_fourier           !< scalar field in Fourier space
   complex(pREAL),            dimension(:,:,:,:,:,:,:), allocatable :: Gamma_hat                     !< gamma operator (field) for spectral method
   complex(pREAL),            dimension(:,:,:,:,:,:,:), allocatable :: G_hat                         !< G operator (field) for Galerkin method
+  complex(pREAL),            dimension(:,:,:,:,:),     allocatable :: G_hat_electrical              !< Gamma operator (field) for electrical
   complex(pREAL),            dimension(:,:,:,:),       allocatable :: xi1st                         !< wave vector field for first derivatives
   complex(pREAL),            dimension(:,:,:,:),       allocatable :: xi2nd                         !< wave vector field for second derivatives
   real(pREAL),               dimension(3,3,3,3)                    :: C_ref                         !< mechanic reference stiffness
-
 
 !--------------------------------------------------------------------------------------------------
 ! plans for FFTW
@@ -98,9 +103,11 @@ module spectral_utilities
   public :: &
     spectral_utilities_init, &
     utilities_updateGamma, &
+    utilities_updateGamma_electrical, &
     utilities_GammaConvolution, &
     utilities_G_Convolution, &
     utilities_GreenConvolution, &
+    utilities_GreenConvolution_electrical, &
     utilities_divergenceRMS, &
     utilities_curlRMS, &
     utilities_scalarGradient, &
@@ -230,7 +237,7 @@ subroutine spectral_utilities_init(active_Gamma, active_G, active_parabolic)
 ! set up FFTW data structures for tensor fields
 ! ToDo: FEM uses tensor field to calculate coordinates, this is not needed
   N = fftw_mpi_local_size_many_transposed(3,[cellsFFTW(3),cellsFFTW(2),int(cells1Red,C_INTPTR_T)], &
-                                          tensorSize,FFTW_MPI_DEFAULT_BLOCK,FFTW_MPI_DEFAULT_BLOCK,PETSC_COMM_WORLD, &
+                                          tensorSize,FFTW_MPI_DEFAULT_BLOCK,FFTW_MPI_DEFAULT_BLOCK,MPI_COMM_WORLD_F90, &
                                           cells3FFTW,cells3_offset,cells2FFTW,cells2_offset)
   cells2 = int(cells2FFTW)
   cells2Offset = int(cells2_offset)
@@ -245,19 +252,19 @@ subroutine spectral_utilities_init(active_Gamma, active_G, active_parabolic)
   planTensorForth = fftw_mpi_plan_many_dft_r2c(3,cellsFFTW(3:1:-1),tensorSize, &
                                                FFTW_MPI_DEFAULT_BLOCK,FFTW_MPI_DEFAULT_BLOCK, &
                                                tensorField_real,tensorField_fourier, &
-                                               PETSC_COMM_WORLD,FFTW_planner_flag+FFTW_MPI_TRANSPOSED_OUT)
+                                               MPI_COMM_WORLD_F90,FFTW_planner_flag+FFTW_MPI_TRANSPOSED_OUT)
   if (.not. c_associated(planTensorForth)) error stop 'FFTW error r2c tensor'
   planTensorBack  = fftw_mpi_plan_many_dft_c2r(3,cellsFFTW(3:1:-1),tensorSize, &
                                                FFTW_MPI_DEFAULT_BLOCK,FFTW_MPI_DEFAULT_BLOCK, &
                                                tensorField_fourier,tensorField_real, &
-                                               PETSC_COMM_WORLD,FFTW_planner_flag+FFTW_MPI_TRANSPOSED_IN)
+                                               MPI_COMM_WORLD_F90,FFTW_planner_flag+FFTW_MPI_TRANSPOSED_IN)
   if (.not. c_associated(planTensorBack))  error stop 'FFTW error c2r tensor'
 
 !--------------------------------------------------------------------------------------------------
 ! set up FFTW data structures for vector fields
 ! ToDo: FEM uses vector field to calculate coordinates, this is not needed
   N = fftw_mpi_local_size_many_transposed(3,[cellsFFTW(3),cellsFFTW(2),int(cells1Red,C_INTPTR_T)], &
-                                          vectorSize,FFTW_MPI_DEFAULT_BLOCK,FFTW_MPI_DEFAULT_BLOCK,PETSC_COMM_WORLD, &
+                                          vectorSize,FFTW_MPI_DEFAULT_BLOCK,FFTW_MPI_DEFAULT_BLOCK,MPI_COMM_WORLD_F90, &
                                           cells3FFTW,cells3_offset,cells2FFTW,cells2_offset)
   if (int(cells3FFTW) /= cells3) error stop 'domain decomposition mismatch (vector, real space)'
   if (int(cells2FFTW) /= cells2) error stop 'domain decomposition mismatch (vector, Fourier space)'
@@ -271,19 +278,19 @@ subroutine spectral_utilities_init(active_Gamma, active_G, active_parabolic)
   planVectorForth = fftw_mpi_plan_many_dft_r2c(3,cellsFFTW(3:1:-1),vectorSize, &
                                                FFTW_MPI_DEFAULT_BLOCK,FFTW_MPI_DEFAULT_BLOCK, &
                                                vectorField_real,vectorField_fourier, &
-                                               PETSC_COMM_WORLD,FFTW_planner_flag+FFTW_MPI_TRANSPOSED_OUT)
+                                               MPI_COMM_WORLD_F90,FFTW_planner_flag+FFTW_MPI_TRANSPOSED_OUT)
   if (.not. c_associated(planVectorForth)) error stop 'FFTW error r2c vector'
   planVectorBack  = fftw_mpi_plan_many_dft_c2r(3,cellsFFTW(3:1:-1),vectorSize, &
                                                FFTW_MPI_DEFAULT_BLOCK,FFTW_MPI_DEFAULT_BLOCK, &
                                                vectorField_fourier,vectorField_real, &
-                                               PETSC_COMM_WORLD,FFTW_planner_flag+FFTW_MPI_TRANSPOSED_IN)
+                                               MPI_COMM_WORLD_F90,FFTW_planner_flag+FFTW_MPI_TRANSPOSED_IN)
   if (.not. c_associated(planVectorBack))  error stop 'FFTW error c2r vector'
 
 !--------------------------------------------------------------------------------------------------
 ! set up FFTW data structures for scalar fields
   if (active_parabolic) then
     N = fftw_mpi_local_size_3d_transposed(cellsFFTW(3),cellsFFTW(2),int(cells1Red,C_INTPTR_T), &
-                                          PETSC_COMM_WORLD,cells3FFTW,cells3_offset,cells2FFTW,cells2_offset)
+                                          MPI_COMM_WORLD_F90,cells3FFTW,cells3_offset,cells2FFTW,cells2_offset)
     if (int(cells3FFTW) /= cells3) error stop 'domain decomposition mismatch (scalar, real space)'
     if (int(cells2FFTW) /= cells2) error stop 'domain decomposition mismatch (scalar, Fourier space)'
 
@@ -295,11 +302,11 @@ subroutine spectral_utilities_init(active_Gamma, active_G, active_parabolic)
 
     planScalarForth = fftw_mpi_plan_dft_r2c_3d(cellsFFTW(3),cellsFFTW(2),cellsFFTW(1), &
                                                scalarField_real,scalarField_fourier, &
-                                               PETSC_COMM_WORLD,FFTW_planner_flag+FFTW_MPI_TRANSPOSED_OUT)
+                                               MPI_COMM_WORLD_F90,FFTW_planner_flag+FFTW_MPI_TRANSPOSED_OUT)
     if (.not. c_associated(planScalarForth)) error stop 'FFTW error r2c scalar'
     planScalarBack  = fftw_mpi_plan_dft_c2r_3d(cellsFFTW(3),cellsFFTW(2),cellsFFTW(1), &
                                                scalarField_fourier,scalarField_real, &
-                                               PETSC_COMM_WORLD,FFTW_planner_flag+FFTW_MPI_TRANSPOSED_IN)
+                                               MPI_COMM_WORLD_F90,FFTW_planner_flag+FFTW_MPI_TRANSPOSED_IN)
     if (.not. c_associated(planScalarBack))  error stop 'FFTW error c2r scalar'
   end if
 
@@ -324,7 +331,7 @@ subroutine spectral_utilities_init(active_Gamma, active_G, active_parabolic)
               xi1st(1:3,i,k,j-cells2Offset) = xi2nd(1:3,i,k,j-cells2Offset)
             endwhere
   end do; end do; end do
-
+  allocate (G_hat_electrical(3,3,cells1Red,cells(3),cells2), source = cmplx(0.0_pREAL,0.0_pREAL,pREAL))
   if (active_Gamma) then
     if (num%memory_efficient) then                                                                  ! allocate just single fourth order tensor
       allocate (Gamma_hat(3,3,3,3,1,1,1), source = cmplx(0.0_pREAL,0.0_pREAL,pREAL))
@@ -386,6 +393,40 @@ subroutine utilities_updateGamma(C)
   end if
 
 end subroutine utilities_updateGamma
+
+!--------------------------------------------------------------------------------------------------
+!> @brief Update reference electrical conductivity and precalculate G_hat_electrical.
+!--------------------------------------------------------------------------------------------------
+subroutine utilities_updateGamma_electrical()
+
+  integer :: i, j, k
+  real(pREAL), dimension(3)    :: k_vec
+  real(pREAL), dimension(3,3)  :: k_dyad
+  real(pREAL)                  :: k_squared
+
+
+  do j = cells2Offset+1, cells2Offset+cells2
+    do k = 1, cells(3)
+      do i = 1, cells1Red
+        ! Get the k-vector (imaginary part of xi1st)
+        k_vec = aimag(xi1st(1:3,i,k,j-cells2Offset))
+        k_vec = merge(sin(k_vec * geomSize / real(cells, kind=pREAL)), &
+                      0.0_pREAL, &
+                      abs(k_vec) > 1.0e-12_pREAL)
+        k_squared = sum(k_vec**2)
+        ! Calculate the modified tensor numerator: (K_i * K_j)
+        k_dyad = math_outer(k_vec,k_vec)
+        if (abs(k_squared) > 1.0e-12_pREAL) then
+          G_hat_electrical(:,:,i,k,j-cells2Offset) = cmplx(-k_dyad/k_squared,0.0_pREAL,pREAL)
+        else
+          ! Avoid division by zero at the DC component (k=0)
+          G_hat_electrical(:,:,i,k,j-cells2Offset) = cmplx(0.0_pREAL,0.0_pREAL,pREAL)
+        end if
+      end do
+    end do
+  end do
+
+end subroutine utilities_updateGamma_electrical
 
 
 !--------------------------------------------------------------------------------------------------
@@ -574,6 +615,34 @@ function utilities_GreenConvolution(field, D_ref, mu_ref, Delta_t) result(greenF
 
 end function utilities_GreenConvolution
 
+!--------------------------------------------------------------------------------------------------
+!> @brief Green's convolution for a 3-component vector field using the Gamma operator.
+!--------------------------------------------------------------------------------------------------
+function utilities_GreenConvolution_electrical(field) result(greenField)
+
+  real(pREAL), intent(in), dimension(3,cells(1),cells(2),cells3) :: field
+  real(pREAL), dimension(3,cells(1),cells(2),cells3) :: greenField
+
+  complex(pREAL), dimension(3)    :: field_fourier_vec
+  integer                         :: i, j, k
+
+  vectorField_real(1:3,cells(1)+1:cells1Red*2,1:cells(2),1:cells3) = 0.0_pREAL                      ! set up FFT plans and buffers for a vector field
+  vectorField_real(1:3,1:cells(1),            1:cells(2),1:cells3) = field
+
+  call fftw_mpi_execute_dft_r2c(planVectorForth,vectorField_real,vectorField_fourier)
+
+  !$OMP PARALLEL DO PRIVATE(field_fourier_vec)
+  do j = 1, cells2; do k = 1, cells(3); do i = 1, cells1Red
+    field_fourier_vec = vectorField_fourier(1:3,i,k,j)                                              ! apply the Gamma operator: e_corr_hat = Gamma * p_hat
+    vectorField_fourier(1:3,i,k,j) = matmul(G_hat_electrical(:,:,i,k,j), field_fourier_vec)         ! use the pre-computed operator
+  end do; end do; end do
+  !$OMP END PARALLEL DO
+
+  call fftw_mpi_execute_dft_c2r(planVectorBack,vectorField_fourier,vectorField_real)
+
+  greenField = vectorField_real(1:3,1:cells(1),1:cells(2),1:cells3)*wgt
+
+end function utilities_GreenConvolution_electrical
 
 !--------------------------------------------------------------------------------------------------
 !> @brief Calculate root mean square of divergence.
@@ -798,7 +867,7 @@ subroutine utilities_updateCoords(F)
   integer(MPI_INTEGER_KIND) :: &
     rank_t, rank_b
   integer(MPI_INTEGER_KIND) :: err_MPI
-#ifndef PETSC_HAVE_MPI_F90MODULE_VISIBILITY
+#ifndef PETSC_EXPOSES_MPIF90
   type(MPI_Request), dimension(4) :: request
   type(MPI_Status),  dimension(4) :: status
 #else
@@ -868,7 +937,7 @@ subroutine utilities_updateCoords(F)
 
   call MPI_Waitall(4,request,status,err_MPI)
   call parallelization_chkerr(err_MPI)
-#ifndef PETSC_HAVE_MPI_F90MODULE_VISIBILITY
+#ifndef PETSC_EXPOSES_MPIF90
   ! ToDo
 #else
   if (any(status(MPI_ERROR,:) /= 0)) error stop 'MPI error'
@@ -1009,6 +1078,11 @@ subroutine selfTest()
   contains
 
     function planeCosine(n)
+#ifndef __GFORTRAN__
+      use prec
+      use math
+      import, none
+#endif
       integer, intent(in) :: n
       real(pREAL), dimension(n) :: planeCosine
 
@@ -1018,6 +1092,11 @@ subroutine selfTest()
     end function planeCosine
 
     function planeSine(n)
+#ifndef __GFORTRAN__
+      use prec
+      use math
+      import, none
+#endif
       integer, intent(in) :: n
       real(pREAL), dimension(n) :: planeSine
 

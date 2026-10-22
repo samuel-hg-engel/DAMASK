@@ -1,24 +1,24 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
-import os
-import json
-import functools
 import colorsys
-from typing import Optional, Union
+import functools
+import json
+import os
 from itertools import chain
 
-import numpy as np
-from numpy import typing as npt
-import scipy.interpolate as interp
 import matplotlib as mpl
+
+
 if os.name == 'posix' and 'DISPLAY' not in os.environ:
     mpl.use('Agg')
-import matplotlib.pyplot as plt
+import numpy as np
+import scipy.interpolate as interp
 from matplotlib import cm
+from matplotlib import pyplot as plt
+from numpy import typing as npt
 from PIL import Image
 
-from ._typehints import FloatSequence, FileHandle
-from . import util
-from . import Table
+from . import Table, util
+from ._typehints import FileHandleText, FloatSequence
 
 
 _EPS   = 216./24389.
@@ -50,7 +50,7 @@ class Colormap(mpl.colors.ListedColormap):
     """
 
     def __init__(self,
-                 colors: np.ndarray, name: str):
+                 colors: npt.NDArray[np.floating], name: str):
         """
         New colormap.
 
@@ -62,7 +62,7 @@ class Colormap(mpl.colors.ListedColormap):
             String to identify the colormap.
         """
         super().__init__(colors,name)
-        self.colors: np.ndarray = np.asarray(colors)
+        self.colors: npt.NDArray[np.floating] = np.asarray(colors)
 
 
     def __eq__(self,
@@ -196,8 +196,9 @@ class Colormap(mpl.colors.ListedColormap):
         return f'Colormap: {self.name}'
 
 
-    @staticmethod
-    def from_range(low: FloatSequence,
+    @classmethod
+    def from_range(cls,
+                   low: FloatSequence,
                    high: FloatSequence,
                    name: str = 'DAMASK colormap',
                    N: int = 256,
@@ -244,11 +245,11 @@ class Colormap(mpl.colors.ListedColormap):
         Colormap: blue_to_black
         """
         toMsh = dict(
-            rgb=Colormap._rgb2msh,
-            hsv=Colormap._hsv2msh,
-            hsl=Colormap._hsl2msh,
-            xyz=Colormap._xyz2msh,
-            lab=Colormap._lab2msh,
+            rgb=cls._rgb2msh,
+            hsv=cls._hsv2msh,
+            hsl=cls._hsl2msh,
+            xyz=cls._xyz2msh,
+            lab=cls._lab2msh,
             msh=lambda x:x,
         )
 
@@ -257,29 +258,29 @@ class Colormap(mpl.colors.ListedColormap):
 
         low_high = np.vstack((low,high)).astype(float)
 
-        if   model.lower() == 'rgb':
-            out_of_bounds = np.any(low_high<0) or np.any(low_high>1)
-        elif model.lower() == 'hsv':
-            out_of_bounds = np.any(low_high<0) or np.any(low_high>[360,1,1])
-        elif model.lower() == 'hsl':
-            out_of_bounds = np.any(low_high<0) or np.any(low_high>[360,1,1])
-        elif model.lower() == 'lab':
-            out_of_bounds = np.any(low_high[:,0]<0)
-        else:
-            out_of_bounds = np.bool_(False)
+        match model.lower():
+            case 'rgb':
+                out_of_bounds = np.any(low_high<0) or np.any(low_high>1)
+            case 'hsv' | 'hsl':
+                out_of_bounds = np.any(low_high<0) or np.any(low_high>[360,1,1])
+            case 'lab':
+                out_of_bounds = np.any(low_high[:,0]<0)
+            case _:
+                out_of_bounds = np.bool_(False)
 
         if out_of_bounds:
             raise ValueError(f'{model.upper()} colors {low_high[0]} | {low_high[1]} are out of bounds')
 
         low_,high_ = map(toMsh[model.lower()],low_high)
-        msh = map(functools.partial(Colormap._interpolate_msh,low=low_,high=high_),np.linspace(0,1,N))
-        rgb = np.array(list(map(Colormap._msh2rgb,msh)))
+        msh = map(functools.partial(cls._interpolate_msh,low=low_,high=high_),np.linspace(0,1,N))
+        rgb = np.array(list(map(cls._msh2rgb,msh)))
 
-        return Colormap(rgb,name=name)
+        return cls(rgb,name=name)
 
 
-    @staticmethod
-    def from_predefined(name: str,
+    @classmethod
+    def from_predefined(cls,
+                        name: str,
                         N: int = 256) -> 'Colormap':
         """
         Select from a set of predefined colormaps.
@@ -310,18 +311,18 @@ class Colormap(mpl.colors.ListedColormap):
         if name in cm.__dict__:
             # matplotlib presets
             colormap = cm.__dict__[name]
-            return Colormap(np.array(list(map(colormap,np.linspace(0,1,N)))
+            return cls(np.array(list(map(colormap,np.linspace(0,1,N)))
                                      if isinstance(colormap,mpl.colors.LinearSegmentedColormap) else
                                      colormap.colors),
                             name=name)
         else:
             # DAMASK presets
-            definition = Colormap._predefined_DAMASK[name]
-            return Colormap.from_range(definition['low'],definition['high'],name,N)
+            definition = cls._predefined_DAMASK[name]
+            return cls.from_range(definition['low'],definition['high'],name,N)
 
 
     def at(self,
-           fraction : Union[float,FloatSequence]) -> np.ndarray:
+           fraction : float | FloatSequence) -> npt.NDArray[np.floating]:
         """
         Interpolate color at fraction.
 
@@ -344,16 +345,16 @@ class Colormap(mpl.colors.ListedColormap):
         >>> 'rgb({},{},{})'.format(*cmap.at(fraction=0.5))
         'rgb(0.5,0.5,0.5)'
         """
-        return interp.interp1d(np.linspace(0,1,self.N),
+        return interp.interp1d(np.linspace(0,1,self.N),                                             # type: ignore[return-value]
                                self.colors,
                                axis=0,
                                assume_sorted=True)(np.asarray(fraction))
 
 
     def shade(self,
-              field: np.ndarray,
-              bounds: Optional[FloatSequence] = None,
-              gap: Optional[float] = None) -> Image.Image:
+              field: npt.NDArray[np.floating],
+              bounds: FloatSequence | None = None,
+              gap: float | None = None) -> Image.Image:
         """
         Generate PIL image of 2D field using colormap.
 
@@ -394,7 +395,7 @@ class Colormap(mpl.colors.ListedColormap):
 
 
     def reversed(self,
-                 name: Optional[str] = None) -> 'Colormap':
+                 name: str | None = None) -> 'Colormap':
         """
         Reverse.
 
@@ -420,7 +421,7 @@ class Colormap(mpl.colors.ListedColormap):
 
 
     def save_paraview(self,
-                      fname: Optional[FileHandle] = None):
+                      fname: FileHandleText | None = None):
         """
         Save as JSON file for use in Paraview.
 
@@ -443,7 +444,7 @@ class Colormap(mpl.colors.ListedColormap):
 
 
     def save_ASCII(self,
-                   fname: Optional[FileHandle] = None):
+                   fname: FileHandleText | None = None):
         """
         Save as ASCII file.
 
@@ -459,28 +460,8 @@ class Colormap(mpl.colors.ListedColormap):
             t.save(fhandle)
 
 
-    def save_GOM(self, fname: Optional[FileHandle] = None):
-        """
-        Save as ASCII file for use in GOM Aramis.
-
-        Parameters
-        ----------
-        fname : file, str, or pathlib.Path, optional
-            File to store results. Defaults to colormap name + '.legend'.
-        """
-        # ToDo: test in GOM
-        GOM_str = '1 1 {name} 9 {name} '.format(name=self.name.replace(" ","_")) \
-                +  '0 1 0 3 0 0 -1 9 \\ 0 0 0 255 255 255 0 0 255 ' \
-                + f'30 NO_UNIT 1 1 64 64 64 255 1 0 0 0 0 0 0 3 0 {self.N}' \
-                + ' '.join([f' 0 {c[0]} {c[1]} {c[2]} 255 1' for c in reversed((self.colors*255).astype(np.int64))]) \
-                + '\n'
-
-        with util.open_text(self.name.replace(' ','_')+'.legend' if fname is None else fname, 'w') as fhandle:
-            fhandle.write(GOM_str)
-
-
     def save_gmsh(self,
-                  fname: Optional[FileHandle] = None):
+                  fname: FileHandleText | None = None):
         """
         Save as ASCII file for use in gmsh.
 
@@ -500,8 +481,8 @@ class Colormap(mpl.colors.ListedColormap):
 
     @staticmethod
     def _interpolate_msh(frac: float,
-                         low: np.ndarray,
-                         high: np.ndarray) -> np.ndarray:
+                         low: npt.NDArray[np.floating],
+                         high: npt.NDArray[np.floating]) -> npt.NDArray[np.floating]:
         """
         Interpolate in Msh color space.
 

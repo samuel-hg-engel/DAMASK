@@ -1,13 +1,13 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
-import os
 import filecmp
-import time
+import os
 import string
 import sys
+import time
 
-import pytest
 import numpy as np
 import numpy.ma as ma
+import pytest
 from vtkmodules.vtkCommonCore import vtkVersion
 
 from damask import util
@@ -50,11 +50,11 @@ def test_imageData(np_rng,tmp_path):
     with open(tmp_path/'imageData.vtk','w') as f:
         f.write(string)
     vtk = VTK.load(tmp_path/'imageData.vtk','VTK_imageData')
-    assert (string == vtr.as_ASCII() == vtk.as_ASCII())
+    assert string == vtr.as_ASCII() == vtk.as_ASCII()
 
 def test_rectilinearGrid(np_rng,tmp_path):
-    grid = np.sort(np_rng.random((3,10)))
-    v = VTK.from_rectilinear_grid(grid)
+    g = np.sort(np_rng.random((3,10)))
+    v = VTK.from_rectilinear_grid(g)
     string = str(v)
     string = v.as_ASCII()
     v.save(tmp_path/'rectilinearGrid',False)
@@ -62,7 +62,7 @@ def test_rectilinearGrid(np_rng,tmp_path):
     with open(tmp_path/'rectilinearGrid.vtk','w') as f:
         f.write(string)
     vtk = VTK.load(tmp_path/'rectilinearGrid.vtk','VTK_rectilinearGrid')
-    assert (string == vtr.as_ASCII() == vtk.as_ASCII())
+    assert string == vtr.as_ASCII() == vtk.as_ASCII()
 
 def test_polyData(np_rng,tmp_path):
     points = np_rng.random((100,3))
@@ -74,7 +74,7 @@ def test_polyData(np_rng,tmp_path):
     with open(tmp_path/'polyData.vtk','w') as f:
         f.write(string)
     vtk = VTK.load(tmp_path/'polyData.vtk','polyData')
-    assert (string == vtp.as_ASCII() == vtk.as_ASCII())
+    assert string == vtp.as_ASCII() == vtk.as_ASCII()
 
 @pytest.mark.xfail(util.version(vtkVersion.GetVTKVersion()) < '9.4.0',
                    reason = 'not available in VTK < 9.4')
@@ -83,7 +83,8 @@ def test_polyData_VTKHDF(np_rng,tmp_path):
     v = VTK.from_poly_data(points)
     v.save_VTKHDF(tmp_path/'polyData')
     vtkhdf = VTK.load(tmp_path/'polyData.vtkhdf')
-    assert (v.as_ASCII() == vtkhdf.as_ASCII())
+    # https://discourse.vtk.org/t/legacy-file-format-data-type-and-version/16299
+    assert v.as_ASCII().replace('long','vtktypeint64') == vtkhdf.as_ASCII().replace('long','vtktypeint64')
 
 # https://defelement.org/elements/lagrange.html
 @pytest.mark.parametrize('cell_type,n_nodes',[
@@ -106,7 +107,7 @@ def test_unstructuredGrid(np_rng,tmp_path,cell_type,n_nodes,order):
     with open(tmp_path/'unstructuredGrid.vtk','w') as f:
         f.write(string)
     vtk = VTK.load(tmp_path/'unstructuredGrid.vtk','unstructuredgrid')
-    assert (string == vtu.as_ASCII() == vtk.as_ASCII())
+    assert string == vtu.as_ASCII() == vtk.as_ASCII()
 
 @pytest.mark.xfail(util.version(vtkVersion.GetVTKVersion()) < '9.4.0',
                    reason = 'not available in VTK < 9.4')
@@ -125,7 +126,7 @@ def test_unstructuredGrid_VTKHDF(np_rng,tmp_path,cell_type,n_nodes,order):
     v = VTK.from_unstructured_grid(nodes,connectivity,cell_type)
     v.save_VTKHDF(tmp_path/'unstructuredGrid')
     vtkhdf = VTK.load(tmp_path/'unstructuredGrid.vtkhdf')
-    assert (v.as_ASCII() == vtkhdf.as_ASCII())
+    assert v.as_ASCII() == vtkhdf.as_ASCII()
 
 
 def test_parallel_out(np_rng,tmp_path):
@@ -149,7 +150,7 @@ def test_compress(np_rng,tmp_path):
     fname_p = tmp_path/'plain.vtp'
     v.save(fname_c,parallel=False,compress=False)
     v.save(fname_p,parallel=False,compress=True)
-    assert (VTK.load(fname_c).as_ASCII() == VTK.load(fname_p).as_ASCII())
+    assert VTK.load(fname_c).as_ASCII() == VTK.load(fname_p).as_ASCII()
 
 
 @pytest.mark.parametrize('fname',['a','a.vtp','a.b','a.b.vtp'])
@@ -183,46 +184,34 @@ def test_invalid_set_shape(default):
     with pytest.raises(ValueError):
         default.set('valid',np.ones(3))
 
-def test_invalid_set_missing_label(np_rng,default):
-    data = np_rng.integers(9,size=np.prod(np.array(default.vtk_data.GetDimensions())-1))
-    with pytest.raises(ValueError):
-        default.set(data=data)
-
-def test_invalid_set_type(default):
-    with pytest.raises(TypeError):
-        default.set(label='valid',data='invalid_type')
-    with pytest.raises(TypeError):
-        default.set(label='valid',table='invalid_type')
-
-def test_invalid_set_dual(default):
-    with pytest.raises(KeyError):
-        default.set(label='valid',data=0,table=0)
-
 @pytest.mark.parametrize('data_type,shape',[(float,(3,)),
                                             (float,(3,3)),
                                             (float,(1,)),
                                             (int,(4,)),
                                             (str,(1,))])
-@pytest.mark.parametrize('N_values',[5*6*7,6*7*8])
-def test_set_get(np_rng,default,data_type,shape,N_values):
-    data = np.squeeze(np_rng.integers(0,100,(N_values,)+shape)).astype(data_type)
-    new = default.set('data',data)
-    assert (np.squeeze(data.reshape(N_values,-1)) == new.get('data')).all()
-
+@pytest.mark.parametrize('cell_centered',[True,False])
+@pytest.mark.parametrize('named_components',[True,False])
+def test_set_get(np_rng,default,data_type,shape,cell_centered,named_components):
+    data = np.squeeze(np_rng.integers(0,100,(default.N_cells if cell_centered else default.N_points,)+shape)).astype(data_type)
+    component_names = [f'comp{i}' for i in range(np.prod(shape))] if named_components and np.prod(shape) > 1 else \
+                      None
+    new = default.set('data',data,component_names=component_names)
+    assert (np.squeeze(data.reshape(-1,np.prod(shape))) == new.get('data')).all()
 
 @pytest.mark.parametrize('shapes',[{'scalar':(1,),'vector':(3,),'tensor':(3,3)},
                                    {'vector':(6,),'tensor':(3,3)},
                                    {'tensor':(3,3),'scalar':(1,)}])
-def test_set_table(np_rng,default,shapes):
+@pytest.mark.parametrize('named_components',[True,False])
+def test_set_from_table(np_rng,default,shapes,named_components):
     N = np_rng.choice([default.N_points,default.N_cells])
-    d = dict()
-    for k,s in shapes.items():
-        d[k] = dict(shape = s,
-                    data = np_rng.random(N*np.prod(s)).reshape((N,-1)))
-    new = default.set(table=Table(shapes,np.column_stack([d[k]['data'] for k in shapes.keys()])))
-    for k,s in shapes.items():
-        assert np.allclose(np.squeeze(d[k]['data']),new.get(k),rtol=1e-7)
+    data = {k:np_rng.random(N*np.prod(s)).reshape((N,-1)) for k,s in shapes.items()}
+    component_names = {k:[f'comp{i}' for i in range(np.prod(s))] for k,s in shapes.items()} if named_components else \
+                      None
 
+    new = default.set_from_table(Table(shapes,np.column_stack(list(data.values()))),
+                                 component_names=component_names)
+    for k,s in shapes.items():
+        np.squeeze(data[k]) == new.get(k)
 
 def test_set_masked(np_rng,default):
     data = np_rng.random((5*6*7,3))
@@ -259,29 +248,27 @@ def test_comments(tmp_path,default):
     new = VTK.load(tmp_path/'with_comments.vti')
     assert new.comments == ['this is a comment']
 
-def test_compare_reference_polyData(update,res_path):
+def test_compare_reference_polyData(assert_allclose,update,res_path):
     points=np.dstack((np.linspace(0.,1.,10),np.linspace(0.,2.,10),np.linspace(-1.,1.,10))).squeeze()
     polyData = VTK.from_poly_data(points).set('coordinates',points)
     if update:
         polyData.save(res_path/'polyData')
     else:
         reference = VTK.load(res_path/'polyData.vtp')
-        assert polyData.as_ASCII() == reference.as_ASCII() and \
-                np.allclose(polyData.get('coordinates'),points)
+        assert polyData.as_ASCII() == reference.as_ASCII()
+        assert_allclose(polyData.get('coordinates'),points)
 
-def test_compare_reference_rectilinearGrid(update,res_path):
-    grid = [np.arange(4)**2.,
-            np.arange(5)**2.,
-            np.arange(6)**2.]                                               # ParaView renders tetrahedral meshing unless using float coordinates!
-    coords = np.stack(np.meshgrid(*grid,indexing='ij'),axis=-1)
+def test_compare_reference_rectilinearGrid(assert_allclose,update,res_path):
+    g = [np.arange(n)**2. for n in [4,5,6]]
+    coords = np.stack(np.meshgrid(*g,indexing='ij'),axis=-1)
     c = coords[:-1,:-1,:-1,:].reshape(-1,3,order='F')
     n = coords[:,:,:,:].reshape(-1,3,order='F')
-    rectilinearGrid = VTK.from_rectilinear_grid(grid) \
+    rectilinearGrid = VTK.from_rectilinear_grid(g) \
                     .set('cell',np.ascontiguousarray(c)) \
                     .set('node',np.ascontiguousarray(n))
     if update:
         rectilinearGrid.save(res_path/'rectilinearGrid')
     else:
         reference = VTK.load(res_path/'rectilinearGrid.vtr')
-        assert rectilinearGrid.as_ASCII() == reference.as_ASCII() and \
-                np.allclose(rectilinearGrid.get('cell'),c)
+        assert rectilinearGrid.as_ASCII() == reference.as_ASCII()
+        assert_allclose(rectilinearGrid.get('cell'),c)

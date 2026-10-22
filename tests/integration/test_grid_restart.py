@@ -1,5 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 import os
+import shutil
 from functools import partial
 
 import pytest
@@ -27,31 +28,30 @@ def h5py_compare_files(iterator,asserter,
            else:
                asserter(dset,cur[path])
 
-@pytest.mark.parametrize('solver',['spectral_basic','spectral_polarization','FEM','spectral_Galerkin'])
+@pytest.mark.parametrize('solver',['FEM','spectral_basic','spectral_polarization','spectral_Galerkin'])
 def test_grid_restart(res_path,tmp_path,copy_files,h5py_dataset_iterator,assert_allclose,solver,petsc_version):
-    grid = '27grains3x3x3' if (solver=='FEM' and petsc_version() < '3.24.1') else '8grains2x2x2'
+    grid = '27grains3x3x3' if (solver=='FEM' and petsc_version() < '3.25.0') else '8grains2x2x2'
     load = 'tensionX'
     material = 'material'
+    cmd = f'damask_grid -l {load}.yaml -g {grid}.vti -m {material}.yaml'
 
     copy_files(res_path,tmp_path)
-
+    # run normal simulation
     config_load = damask.YAML.load(res_path/f'{load}.yaml')
     config_load['solver']['mechanical'] = solver
+    config_load.save(tmp_path/f'{load}.yaml')
+    damask.util.run(cmd+' -j normal',wd=tmp_path)
 
-    for mode in ['normal','restart']:
-        if mode == 'restart':
-            config_load['loadstep'][0]['discretization']['t']=17.
-            config_load['loadstep'][0]['discretization']['N']=17
-        config_load.save(tmp_path/f'{load}.yaml')
-
-        cmd = f'DAMASK_grid -l {load}.yaml -g {grid}.vti -m {material}.yaml -j {mode}'
-        damask.util.run(cmd,wd=tmp_path)
-
-        if mode == 'restart':
-            config_load['loadstep'][0]['discretization']['t']=18.
-            config_load['loadstep'][0]['discretization']['N']=18
-            config_load.save(tmp_path/f'{load}.yaml')
-            damask.util.run(cmd+' -r 17',wd=tmp_path)
+    # terminate normal simulation one increment before the end to check if restart works at the end of the loadstep
+    config_load['loadstep'][0]['discretization']['t']-=1.
+    config_load['loadstep'][0]['discretization']['N']-=1
+    config_load.save(tmp_path/f'{load}.yaml')
+    damask.util.run(cmd+' -j restart',wd=tmp_path)
+    # restart for last increment
+    config_load['loadstep'][0]['discretization']['t']+=1.
+    config_load['loadstep'][0]['discretization']['N']+=1
+    config_load.save(tmp_path/f'{load}.yaml')
+    damask.util.run(cmd+f" -j restart -r {config_load['loadstep'][0]['f_restart']}",wd=tmp_path)
 
     assert (damask.Table.load(tmp_path/'normal.sta').get('IterationsNeeded') ==
             damask.Table.load(tmp_path/'restart.sta').get('IterationsNeeded')).all()
@@ -60,7 +60,40 @@ def test_grid_restart(res_path,tmp_path,copy_files,h5py_dataset_iterator,assert_
                        tmp_path/'normal.hdf5',
                        tmp_path/'restart.hdf5')
 
-def test_grid_restart_new_file(res_path,tmp_path,copy_files,h5py_dataset_iterator,assert_allclose):
+@pytest.mark.parametrize('solver',['FEM','spectral_basic','spectral_polarization','spectral_Galerkin'])
+def test_grid_restart_from_0(res_path,tmp_path,copy_files,assert_allclose,solver,petsc_version):
+    grid = '27grains3x3x3' if (solver=='FEM' and petsc_version() < '3.25.0') else '8grains2x2x2'
+    load = 'tensionX'
+    material = 'material'
+    job = f'{grid}_{load}_{material}'
+
+    copy_files(res_path,tmp_path)
+
+    config_load = damask.YAML.load(res_path/f'{load}.yaml')
+    config_load['solver']['mechanical'] = solver
+
+    config_load['loadstep'][0]['discretization']['t']=10.
+    config_load['loadstep'][0]['discretization']['N']=10
+    config_load['loadstep'][0]['f_restart']=9
+    config_load['loadstep'][0]['f_out']=10
+    config_load.save(tmp_path/f'{load}.yaml')
+
+    cmd = f'damask_grid -l {load}.yaml -g {grid}.vti -m {material}.yaml -j {job}'
+    damask.util.run(cmd,wd=tmp_path)
+    os.rename(tmp_path/f'{job}.hdf5',tmp_path/'initial.hdf5')
+
+    config_load['loadstep'][0]['discretization']['t']=1.
+    config_load['loadstep'][0]['discretization']['N']=1
+    config_load['loadstep'][0]['f_out']=1
+    config_load['loadstep'][0]['estimate_rate']=True
+    config_load.save(tmp_path/f'{load}.yaml')
+    damask.util.run(cmd+' -r 0',wd=tmp_path)
+
+    assert_allclose(damask.Result(tmp_path/'initial.hdf5').view(increments=-1).get('u_p'),
+                    damask.Result(tmp_path/f'{job}.hdf5').view(increments=-1).get('u_p'))
+
+@pytest.mark.parametrize('A,B',[('PhenoA','PhenoB'),('dislotwin_TWIP-TRIP','dislotwin_TWIP-TRIP')])
+def test_grid_restart_new_file(res_path,tmp_path,copy_files,h5py_dataset_iterator,assert_allclose,A,B):
     grid = '8grains2x2x2'
     load = 'tensionX'
     material = 'material'
@@ -71,9 +104,14 @@ def test_grid_restart_new_file(res_path,tmp_path,copy_files,h5py_dataset_iterato
     config_load['solver']['mechanical'] = 'spectral_Galerkin'
     config_load.save(tmp_path/f'{load}.yaml')
 
-    damask.util.run(f'DAMASK_grid -l {load}.yaml -g {grid}.vti -m {material}.yaml -j normal',wd=tmp_path)
+    config_material = damask.ConfigMaterial.load(res_path/f'{material}.yaml')
+    config_material['phase']['A']['plastic'] = damask.ConfigMaterial.load(res_path/f'{A}.yaml')
+    config_material['phase']['B']['plastic'] = damask.ConfigMaterial.load(res_path/f'{B}.yaml')
+    config_material.save(tmp_path/f'{material}.yaml')
+    damask.util.run(f'damask_grid -l {load}.yaml -g {grid}.vti -m {material}.yaml -j normal',wd=tmp_path)
     os.rename(tmp_path/'normal_restart.hdf5',tmp_path/'restart_restart.hdf5')
-    damask.util.run(f'DAMASK_grid -l {load}.yaml -g {grid}.vti -m {material}.yaml -j restart -r 17',wd=tmp_path)
+    damask.util.run(f'damask_grid -l {load}.yaml -g {grid}.vti -m {material}.yaml -j restart'+
+                    f" -r {config_load['loadstep'][0]['f_restart']}",wd=tmp_path)
 
     assert (damask.Table.load(tmp_path/'normal.sta').get('IterationsNeeded')[-1] ==
             damask.Table.load(tmp_path/'restart.sta').get('IterationsNeeded')[-1]).all()
@@ -82,10 +120,10 @@ def test_grid_restart_new_file(res_path,tmp_path,copy_files,h5py_dataset_iterato
                        partial(assert_allclose,rtol=1.e-3),
                        tmp_path/'restart.hdf5',
                        tmp_path/'normal.hdf5')
-    damask.Result(tmp_path/'restart.hdf5')
+    # damask.Result(tmp_path/'restart.hdf5')
 
 
-@pytest.mark.parametrize('solver',['spectral_basic','spectral_polarization','FEM','spectral_Galerkin'])
+@pytest.mark.parametrize('solver',['FEM','spectral_basic','spectral_polarization','spectral_Galerkin'])
 def test_grid_restart_thermo_mechanical(res_path,tmp_path,copy_files,h5py_dataset_iterator,assert_allclose,solver):
     grid = '27grains3x3x3'
     load = 'tensionX'
@@ -101,9 +139,9 @@ def test_grid_restart_thermo_mechanical(res_path,tmp_path,copy_files,h5py_datase
     config_material['homogenization'] = {'SX': {'N_constituents': 1,'mechanical': {'type': 'pass'},
                                                                     'thermal': {'type': 'pass', 'output': ['T']}}}
     config_material = config_material.material_add(phase=['Phenopowerlaw'],
-                                                   O=damask.Rotation.from_random(np.prod(g.cells),rng_seed=1),
+                                                   O=damask.Rotation.from_random(np.prod(g.cells),rng=1),
                                                    homogenization = 'SX')
-    config_material['phase']['Phenopowerlaw'] = damask.ConfigMaterial.load(res_path/'material.yaml')['phase']['Phenopowerlaw1']
+    config_material['phase']['Phenopowerlaw'] = damask.ConfigMaterial.load(res_path/'material.yaml')['phase']['A']
     config_material['phase']['Phenopowerlaw']['rho'] = 1
     config_material['phase']['Phenopowerlaw']['thermal'] = {'C_p': 1, 'K_11': 0.0, 'K_33': 0.0,
                                                             'source': [{'type': 'externalheat', 'f': [1,1], 't': [0,100]}]}
@@ -119,7 +157,7 @@ def test_grid_restart_thermo_mechanical(res_path,tmp_path,copy_files,h5py_datase
             config_load['loadstep'][0]['discretization']['N']=17
         config_load.save(tmp_path/f'{load}.yaml')
 
-        cmd = f'DAMASK_grid -l {load}.yaml -g {grid}.vti -m {material}.yaml -j {mode}'
+        cmd = f'damask_grid -l {load}.yaml -g {grid}.vti -m {material}.yaml -j {mode}'
         damask.util.run(cmd,wd=tmp_path)
 
         if mode == 'restart':
@@ -151,7 +189,7 @@ def test_grid_restart_damage_simple(res_path,tmp_path,copy_files,h5py_dataset_it
             config_load['loadstep'][0]['discretization']['N']=8
         config_load.save(tmp_path/f'{load}.yaml')
 
-        cmd = f'DAMASK_grid -l {load}.yaml -g {grid}.vti -m {material}.yaml -j {mode}'
+        cmd = f'damask_grid -l {load}.yaml -g {grid}.vti -m {material}.yaml -j {mode}'
         damask.util.run(cmd,wd=tmp_path)
 
         if mode == 'restart':
@@ -168,7 +206,7 @@ def test_grid_restart_damage_simple(res_path,tmp_path,copy_files,h5py_dataset_it
                         tmp_path/'restart.hdf5')
 
 
-def test_grid_restart_damage_complex(res_path,tmp_path,copy_files,h5py_dataset_iterator,assert_allclose,):
+def test_grid_restart_damage_complex(res_path,tmp_path,copy_files,h5py_dataset_iterator,assert_allclose):
     grid = 'plate_with_hole'
     load = 'isoBrittle' # 500 loadsteps
     material = 'plate_with_hole_isoBrittle_cube'
@@ -184,7 +222,7 @@ def test_grid_restart_damage_complex(res_path,tmp_path,copy_files,h5py_dataset_i
             config_load['loadstep'][-1]['f_restart'] = 60 # restart record step
         config_load.save(tmp_path/f'{load}.yaml')
 
-        cmd = f'DAMASK_grid -l {load}.yaml -g {grid}.vti -m {material}.yaml -j {mode}'
+        cmd = f'damask_grid -l {load}.yaml -g {grid}.vti -m {material}.yaml -j {mode}'
         damask.util.run(cmd,wd=tmp_path)
 
         if mode == 'restart':
@@ -192,6 +230,44 @@ def test_grid_restart_damage_complex(res_path,tmp_path,copy_files,h5py_dataset_i
             config_load['loadstep'][-1]['discretization']['N']=300
             config_load.save(tmp_path/f'{load}.yaml')
             damask.util.run(cmd+' -r 260',wd=tmp_path)
+
+    assert (damask.Table.load(tmp_path/'normal.sta').get('IterationsNeeded') ==
+            damask.Table.load(tmp_path/'restart.sta').get('IterationsNeeded')).all()
+    h5py_compare_files(h5py_dataset_iterator,
+                        partial(assert_allclose,rtol=1.e-3),
+                        tmp_path/'normal.hdf5',
+                        tmp_path/'restart.hdf5')
+
+
+def test_grid_restart_chemical(res_path,tmp_path,copy_files,h5py_dataset_iterator,assert_allclose):
+    grid = 'regular'
+    load = 'no_deformation'
+    material = 'materialchem'
+
+    copy_files(res_path,tmp_path, [f'{grid}.vti',f'{material}.yaml'])
+
+    l = damask.LoadcaseGrid.load(res_path/f'{load}.yaml')
+    l['solver']['thermal'] = 'spectral'                       # read the field: T
+    t_r = 0.375
+    N_r = 25
+    l['loadstep'][-1]['discretization']['t'] = 4*t_r
+    l['loadstep'][-1]['discretization']['N'] = int(4*N_r)
+
+    for mode in ['normal','restart']:
+        if mode == 'restart':
+            l['loadstep'][-1]['discretization']['t'] = t_r
+            l['loadstep'][-1]['discretization']['N'] = N_r
+            l['loadstep'][-1]['f_restart'] = N_r              # restart record step
+        l.save(tmp_path/f'{load}.yaml')
+
+        cmd = f'damask_grid -l {load}.yaml -g {grid}.vti -m {material}.yaml -j {mode}'
+        damask.util.run(cmd,wd=tmp_path)
+
+        if mode == 'restart':
+            l['loadstep'][-1]['discretization']['t'] = 4*t_r
+            l['loadstep'][-1]['discretization']['N'] = int(4*N_r)
+            l.save(tmp_path/f'{load}.yaml')
+            damask.util.run(cmd + f' -r {N_r}',wd=tmp_path)
 
     assert (damask.Table.load(tmp_path/'normal.sta').get('IterationsNeeded') ==
             damask.Table.load(tmp_path/'restart.sta').get('IterationsNeeded')).all()

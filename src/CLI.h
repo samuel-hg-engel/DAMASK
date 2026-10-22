@@ -14,27 +14,32 @@
 #ifdef BOOST
 
 #include <stdio.h>
+#include <ISO_Fortran_binding.h>
 #include <ostream>
 #include <span>
 #include <string>
 
-namespace boost { namespace program_options { class options_description; } }
+namespace boost {
+namespace program_options {
+class options_description;
+}
+} // namespace boost
 namespace po = boost::program_options;
-using namespace std;
 
 extern "C" {
-  /**
-   * Print a C null‑terminated string through Fortran's `write` method.
-   *
-   * @param[in] c_str  Pointer to the first character of C-string (must be 0‑terminated).
-   */
-  void F_IO_printCppString(const char* c_str);
+/**
+ * Print a descriptor-backed string through Fortran's `write` method.
+ *
+ * @param[in] c_str  Descriptor for the string to print.
+ */
+void F_IO_print(CFI_cdesc_t* c_str);
 
-  /** Print Fortran `compiler_options()` string and cmake info. */
-  void F_printCompileOptions();
+void F_printCompileOptions();
 
-  extern bool IO_redirectedSTDOUT;
-  extern bool IO_redirectedSTDERR;
+void quit(int stop_id);
+
+extern bool IO_redirectedSTDOUT; // NOLINT(readability-identifier-naming)
+extern bool IO_redirectedSTDERR; // NOLINT(readability-identifier-naming)
 }
 
 /**
@@ -49,20 +54,28 @@ class FortranStream : public std::ostream {
   class FortranBuffer : public std::streambuf {
     std::string buffer;
     int overflow(int c) override {
-      if (c != EOF) buffer += static_cast<char>(c);
+      if (c != EOF)
+        buffer += static_cast<char>(c);
       return c;
     }
     int sync() override {
       if (!buffer.empty()) {
-        F_IO_printCppString(buffer.c_str());
+        // use capitalized cdesc_t as macro to create cfi scalar on stack, for storage of string data for Fortran
+        // https://github.com/gcc-mirror/gcc/blob/master/libgfortran/ISO_Fortran_binding.h#L77
+        CFI_CDESC_T(0) buffer_desc_raw;
+        auto* buffer_desc =
+            reinterpret_cast<CFI_cdesc_t*>(&buffer_desc_raw); // NOLINT(cppcoreguidelines-pro-type-reinterpret-cast)
+        CFI_establish(buffer_desc, buffer.data(), CFI_attribute_other, CFI_type_char, buffer.size(), 0, nullptr);
+        F_IO_print(buffer_desc);
         buffer.clear();
       }
       return 0;
     }
   };
-  FortranBuffer buf_;
+  FortranBuffer buf;
+
 public:
-  FortranStream() : std::ostream(&buf_) {}
+  FortranStream() : std::ostream(&buf) {}
 };
 
 /**
@@ -73,10 +86,8 @@ public:
  */
 class CLI {
 public:
-  int          restart_inc = 0;
-  std::string  geom_path, loadfile_path,
-               material_path, numerics_path,
-               jobname, uuid;
+  int restart_inc = -1;
+  std::string geom_path, loadfile_path, material_path, numerics_path, jobname, uuid;
 
   FortranStream cout{};
 
@@ -86,7 +97,7 @@ public:
    * @param[in]     argv        Argument vector
    * @param[in]     worldrank   MPI rank
    */
-  CLI(std::span<const char*> args, int* worldrank);
+  CLI(std::span<const char*> args, const int* worldrank);
 
   /** Print initialization text. */
   void init_print();
@@ -94,7 +105,6 @@ public:
   /**
    * @brief Print the help text.
    * @param[in] flags            Boost flags
-   * @param[in] include_restart  Print restart help (only grid)
    */
   void help_print(const po::options_description& flags);
 };

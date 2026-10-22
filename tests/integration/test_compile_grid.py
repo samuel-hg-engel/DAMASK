@@ -19,16 +19,18 @@ reference_results = {}
 @pytest.mark.parametrize('openMP',['OFF','ON'])
 @pytest.mark.parametrize('optimization',['OFF','DEFENSIVE','AGGRESSIVE'])
 def test_compile_grid(damask_root,res_path,tmp_path,copy_files,h5py_dataset_iterator,assert_allclose,
-                      openMP,optimization):
+                      buildcmd_post,build_type,openMP,optimization):
     global reference_results
     cmd = 'cmake '+\
-            '-D CMAKE_BUILD_TYPE=DEBUG '+\
+            f'-D CMAKE_BUILD_TYPE={build_type} '+\
             '-D CMAKE_VERBOSE_MAKEFILE=ON '+\
             f'-D CMAKE_INSTALL_PREFIX={tmp_path} '+\
             '-D GRID=ON '+\
             f'-D OPENMP={openMP} '+\
             f'-D OPTIMIZATION={optimization} '+\
             str(damask_root)
+    if buildcmd_post:
+        cmd += f' -D BUILDCMD_POST={buildcmd_post}'
     damask.util.run(cmd,wd=tmp_path)
     damask.util.run('make VERBOSE=1 -j4 install',wd=tmp_path)
 
@@ -44,7 +46,7 @@ def test_compile_grid(damask_root,res_path,tmp_path,copy_files,h5py_dataset_iter
         load_config['solver']['mechanical'] = solver
         load_config.save(tmp_path/f'{load}.yaml')
 
-        out, _ = damask.util.run(f'./bin/DAMASK_grid -l {load}.yaml -g {grid}.vti -m {material}.yaml -j {job}',
+        out, _ = damask.util.run(f'./bin/damask_grid -l {load}.yaml -g {grid}.vti -m {material}.yaml -j {job}',
                                  wd=tmp_path)
         assert solver in out
 
@@ -64,4 +66,4 @@ def test_compile_grid(damask_root,res_path,tmp_path,copy_files,h5py_dataset_iter
                 else:
                     m = max(np.amax(np.abs(dset)),np.amax(np.abs(cur[path])))
                     if m < 1: continue
-                    assert_allclose(dset,cur[path],rtol=.0,atol=m*1e-4)
+                    assert_allclose(dset,cur[path],atol=m*1e-4)

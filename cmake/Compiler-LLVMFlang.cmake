@@ -2,7 +2,7 @@
 ###################################################################################################
 # LLVM Compiler
 ###################################################################################################
-set(Fortran_COMPILER_VERSION_MIN 22)
+set(Fortran_COMPILER_VERSION_MIN 23)
 
 set(_OPTIMIZATION_OFF        "-O0")
 set(_OPTIMIZATION_DEBUG      "${_OPTIMIZATION_OFF}")
@@ -15,9 +15,9 @@ else()
   message(FATAL_ERROR "Unknown OPTIMIZATION level: ${OPTIMIZATION}")
 endif()
 
-if(OPENMP)
-  set(OPENMP_FLAGS "-fopenmp")
-endif()
+#if(OPENMP)
+#  set(OPENMP_FLAGS "-fopenmp")
+#endif()
 
 set(STANDARD_CHECK "-std=f2018 -pedantic")
 

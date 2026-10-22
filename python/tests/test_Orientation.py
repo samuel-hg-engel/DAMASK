@@ -1,7 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
-import pytest
-import numpy as np
 import itertools
+
+import numpy as np
+import pytest
 from matplotlib import pyplot as plt
 from PIL import Image
 
@@ -10,7 +11,8 @@ from damask import Orientation
 from damask import Table
 from damask import Crystal
 from damask import util
-from damask import grid_filters
+from damask import grid
+from damask import tensor
 from damask import _crystal
 
 crystal_families = set(_crystal.lattice_symmetries.values())
@@ -28,21 +30,21 @@ def set_of_rodrigues(set_of_quaternions):
 @pytest.mark.parametrize('family',crystal_families)
 @pytest.mark.parametrize('shape',[None,5,(4,6)])
 def test_equal(np_rng,family,shape):
-    R = Rotation.from_random(shape,rng_seed=np_rng)
+    R = Rotation.from_random(shape,rng=np_rng)
     assert Orientation(R,family=family) == Orientation(R,family=family) if shape is None else \
             (Orientation(R,family=family) == Orientation(R,family=family)).all()
 
 @pytest.mark.parametrize('family',crystal_families)
 @pytest.mark.parametrize('shape',[None,5,(4,6)])
 def test_unequal(np_rng,family,shape):
-    R = Rotation.from_random(shape,rng_seed=np_rng)
+    R = Rotation.from_random(shape,rng=np_rng)
     assert not ( Orientation(R,family=family) != Orientation(R,family=family) if shape is None else \
                 (Orientation(R,family=family) != Orientation(R,family=family)).any())
 
 
 @pytest.mark.parametrize('shape',[None,5,(4,6)])
 def test_comparison_NotImplemented(np_rng,shape):
-    R = Orientation.from_random(family='cubic',shape=shape,rng_seed=np_rng)
+    R = Orientation.from_random(family='cubic',shape=shape,rng=np_rng)
     assert type(R != None) is bool
     assert type(R == None) is bool
     assert type(R != 15) is bool
@@ -52,7 +54,7 @@ def test_comparison_NotImplemented(np_rng,shape):
 @pytest.mark.parametrize('family',crystal_families)
 @pytest.mark.parametrize('shape',[None,5,(4,6)])
 def test_close(np_rng,family,shape):
-    R = Orientation.from_random(family=family,shape=shape,rng_seed=np_rng)
+    R = Orientation.from_random(family=family,shape=shape,rng=np_rng)
     assert R.isclose(R.reduced).all() and R.allclose(R.reduced)
 
 @pytest.mark.parametrize('a,b',[(dict(rotation=[1,0,0,0],family='triclinic'),
@@ -104,7 +106,7 @@ def test_invalid_lattice_init(invalid_lattice):
                                    dict(lattice='cI',a=1.0,                                                    ),
                                   ])
 def test_repr(np_rng,kwargs):
-    o = Orientation.from_random(**kwargs,rng_seed=np_rng)
+    o = Orientation.from_random(**kwargs,rng=np_rng)
     assert isinstance(o.__repr__(),str)
 
 @pytest.mark.parametrize('kwargs',[
@@ -116,8 +118,8 @@ def test_repr(np_rng,kwargs):
                                    dict(lattice='cI',a=1.0,                                                    ),
                                   ])
 def test_copy(np_rng,kwargs):
-    o = Orientation.from_random(**kwargs,rng_seed=np_rng)
-    p = o.copy(rotation=Rotation.from_random(rng_seed=np_rng))
+    o = Orientation.from_random(**kwargs,rng=np_rng)
+    p = o.copy(rotation=Rotation.from_random(rng=np_rng))
     assert o != p
 
 def test_from_quaternion():
@@ -161,16 +163,16 @@ def test_from_fiber_component(np_rng):
     crystal = np_rng.random(2) * [180,360]
     sample = np_rng.random(2) * [180,360]
     r = Rotation.from_fiber_component(crystal=crystal,sample=sample,
-                                      sigma=0.0,shape=1,rng_seed=0)
+                                      sigma=0.0,shape=1,rng=0)
     assert np.all(Orientation.from_fiber_component(crystal=crystal,sample=sample,
-                                                   sigma=0.0,shape=None,rng_seed=0,lattice='cI').quaternion
+                                                   sigma=0.0,shape=None,rng=0,lattice='cI').quaternion
                 == r.quaternion)
 
 @pytest.mark.parametrize('crystal,sample,direction,color',[([np.pi/4,0],[np.pi/2,0],[1,0,0],[0,1,0]),
                                                             ([np.arccos(3**(-.5)),np.pi/4,0],[0,0],[0,0,1],[0,0,1])])
-def test_fiber_IPF(crystal,sample,direction,color):
+def test_fiber_IPF(assert_allclose,crystal,sample,direction,color):
     fiber = Orientation.from_fiber_component(crystal=crystal,sample=sample,family='cubic',shape=200)
-    assert np.allclose(fiber.IPF_color(direction),color)
+    assert_allclose(fiber.IPF_color(direction),color)
 
 
 @pytest.mark.parametrize('kwargs',[
@@ -225,7 +227,7 @@ def test_average(angle,family):
 @pytest.mark.parametrize('family',crystal_families)
 def test_reduced_equivalent(np_rng,family):
     i = Orientation(family=family)
-    o = Orientation.from_random(family=family,rng_seed=np_rng)
+    o = Orientation.from_random(family=family,rng=np_rng)
     eq = o.equivalent
     FZ = np.argmin(abs(eq.misorientation(i.broadcast_to(len(eq))).as_axis_angle(pair=True)[1]))
     assert o.reduced == eq[FZ]
@@ -235,15 +237,15 @@ def test_reduced_corner_cases(np_rng,family):
     # test whether there is always exactly one sym-eq rotation that falls into the FZ
     N = np_rng.integers(10,40)
     size = np.ones(3)*np.pi**(2./3.)
-    grid = grid_filters.coordinates0_node([N+1,N+1,N+1],size,-size*.5)
-    evenly_distributed = Orientation.from_cubochoric(x=grid,family=family)
+    g = grid.coordinates0_node([N+1,N+1,N+1],size,-size*.5)
+    evenly_distributed = Orientation.from_cubochoric(x=g,family=family)
     assert evenly_distributed.shape == evenly_distributed.reduced.shape
 
 @pytest.mark.parametrize('family',crystal_families)
 @pytest.mark.parametrize('N',[1,8,32])
 def test_disorientation(np_rng,family,N):
-    o = Orientation.from_random(family=family,shape=N,rng_seed=np_rng)
-    p = Orientation.from_random(family=family,shape=N,rng_seed=np_rng)
+    o = Orientation.from_random(family=family,shape=N,rng=np_rng)
+    p = Orientation.from_random(family=family,shape=N,rng=np_rng)
 
     d,ops = o.disorientation(p,return_operators=True)
 
@@ -258,10 +260,10 @@ def test_disorientation(np_rng,family,N):
                                   .as_quaternion())
 
 @pytest.mark.parametrize('family',crystal_families)
-def test_disorientation360(family):
+def test_disorientation360(assert_allclose,family):
     o_1 = Orientation(Rotation(),family=family)
     o_2 = Orientation.from_Euler_angles(family=family,phi=[360,0,0],degrees=True)
-    assert np.allclose((o_1.disorientation(o_2)).as_matrix(),np.eye(3))
+    assert_allclose((o_1.disorientation(o_2)).as_matrix(),np.eye(3))
 
 @pytest.mark.parametrize('family',crystal_families)
 @pytest.mark.parametrize('shapes',[[None,None],
@@ -269,8 +271,8 @@ def test_disorientation360(family):
                                    [[3,4],[4,3]],
                                    [1000,1000]])
 def test_disorientation_angle(assert_allclose,np_rng,family,shapes):
-    o_1 = Orientation.from_random(shape=shapes[0],family=family,rng_seed=np_rng)
-    o_2 = Orientation.from_random(shape=shapes[1],family=family,rng_seed=np_rng)
+    o_1 = Orientation.from_random(shape=shapes[0],family=family,rng=np_rng)
+    o_2 = Orientation.from_random(shape=shapes[1],family=family,rng=np_rng)
     angle = o_1.disorientation_angle(o_2)
     full = o_1.disorientation(o_2).as_axis_angle(pair=True)[1]
     assert_allclose(angle,full,atol=1e-7,rtol=0)
@@ -283,8 +285,8 @@ def test_disorientation_angle(assert_allclose,np_rng,family,shapes):
                                    [100,100,(100,)]])
 def test_shape_blending(np_rng,shapes):
     me,other,blend = shapes
-    o_1 = Orientation.from_random(shape=me,family='triclinic',rng_seed=np_rng)
-    o_2 = Orientation.from_random(shape=other,family='triclinic',rng_seed=np_rng)
+    o_1 = Orientation.from_random(shape=me,family='triclinic',rng=np_rng)
+    o_2 = Orientation.from_random(shape=other,family='triclinic',rng=np_rng)
     angle = o_1.misorientation_angle(o_2)
     full = o_1.misorientation(o_2)
     composition = o_1*o_2
@@ -292,8 +294,8 @@ def test_shape_blending(np_rng,shapes):
 
 def test_disorientation_invalid(np_rng):
     a,b = np_rng.choice(list(crystal_families),2,False)
-    o_1 = Orientation.from_random(family=a,rng_seed=np_rng)
-    o_2 = Orientation.from_random(family=b,rng_seed=np_rng)
+    o_1 = Orientation.from_random(family=a,rng=np_rng)
+    o_2 = Orientation.from_random(family=b,rng=np_rng)
     with pytest.raises(NotImplementedError):
         o_1.disorientation(o_2)
     with pytest.raises(NotImplementedError):
@@ -309,19 +311,19 @@ def test_disorientation_zero(assert_allclose,set_of_quaternions,family):
                                   {'label':'green','RGB':[0,1,0],'direction':[0,1,1]},
                                   {'label':'blue', 'RGB':[0,0,1],'direction':[1,1,1]}])
 @pytest.mark.parametrize('proper',[True,False])
-def test_IPF_cubic(color,proper):
+def test_IPF_cubic(assert_allclose,color,proper):
     cube = Orientation(family='cubic')
     for direction in set(itertools.permutations(np.array(color['direction']))):
-        assert np.allclose(np.array(color['RGB']),
-                            cube.IPF_color(vector=np.array(direction),proper=proper))
+        assert_allclose(np.array(color['RGB']),
+                        cube.IPF_color(vector=np.array(direction),proper=proper))
 
 @pytest.mark.parametrize('family',crystal_families)
 @pytest.mark.parametrize('proper',[True,False])
-def test_IPF_equivalent(np_rng,set_of_quaternions,family,proper):
+def test_IPF_equivalent(assert_allclose,np_rng,set_of_quaternions,family,proper):
     direction = np_rng.random(3)*2.0-1.0
     o = Orientation(rotation=set_of_quaternions,family=family).equivalent
     color = o.IPF_color(vector=direction,proper=proper)
-    assert np.allclose(np.broadcast_to(color[0,...],color.shape),color)
+    assert_allclose(np.broadcast_to(color[0,...],color.shape),color)
 
 @pytest.mark.parametrize('relation',[None,'Peter','Paul'])
 def test_unknown_relation(relation):
@@ -356,7 +358,7 @@ def test_invalid_argument(function):
 
 @pytest.mark.parametrize('model',['Bain','KS','GT','GT_prime','NW','Pitsch','Burgers'])
 @pytest.mark.parametrize('lattice',['cF','cI'])                                                     # will be adjusted for Burgers
-def test_relationship_reference(update,res_path,model,lattice):
+def test_relationship_reference(assert_allclose,update,res_path,model,lattice):
     lattice_ = 'hP' if lattice=='cF' and model=='Burgers' else lattice
     reference = res_path/f'{lattice_}_{model}.txt'
     o = Orientation(lattice=lattice_)
@@ -364,7 +366,7 @@ def test_relationship_reference(update,res_path,model,lattice):
     if update:
         coords = np.array([(1,i+1) for i,x in enumerate(eu)])
         Table({'Eulers':(3,)},eu).set('pos',coords).save(reference)
-    assert np.allclose(eu,Table.load(reference).get('Eulers'))
+    assert_allclose(eu,Table.load(reference).get('Eulers'))
 
 @pytest.mark.parametrize('lattice,a,b,c,alpha,beta,gamma',
                         [
@@ -407,7 +409,7 @@ def test_to_frame(np_rng,shape,lattice,a,b,c,alpha,beta,gamma,vector_shape,kw,wi
 def test_to_frame_symmetries(np_rng,lattice,mode,vector,N_sym):
     keyword = 'hkil' if mode == 'direction' else 'uvtw'
     if lattice != 'hP': keyword = keyword[:2] + keyword[3]
-    o = Orientation.from_random(lattice=lattice,rng_seed=np_rng)
+    o = Orientation.from_random(lattice=lattice,rng=np_rng)
     frame = o.to_frame(**{keyword:vector,'with_symmetry':True})
     shape_full = frame.shape[0]
     shape_reduced = np.unique(np.around(frame,10),axis=0).shape[0]
@@ -432,15 +434,24 @@ def test_Schmid_twin_direction(c_a,mode):
 def test_Schmid_crystal_equivalence(np_rng,assert_allclose,lattice):
     shape = np_rng.integers(1,4,np_rng.integers(1,4))
     O = Orientation.from_random(shape=shape,lattice=lattice,
-                                c=(1.2 if lattice == 'tI' else None),rng_seed=np_rng)               # noqa
+                                c=(1.2 if lattice == 'tI' else None),rng=np_rng)               # noqa
     c = Crystal(lattice=lattice,c=(1.2 if lattice == 'tI' else None))
     for mode in ['slip']+([] if lattice == 'tI' else ['twin']):
-        Ps = O.Schmid(N_slip='*') if mode == 'slip' else O.Schmid(N_twin='*')
+        Ps = O.Schmid(**{f'N_{mode}':'*'})
         for i in itertools.product(*map(range,tuple(shape))):
-            P = ~O[i] @ (c.Schmid(N_slip='*') if mode == 'slip' else c.Schmid(N_twin='*'))
+            P = ~O[i] @ c.Schmid(**{f'N_{mode}':'*'})
             idx = (slice(None),)+i+(slice(None),slice(None))
             assert_allclose(P,Ps[idx])
             #assert_allclose(P,Ps[:,*i,:,:])                                                        # ok for Python >= 3.13
+
+@pytest.mark.parametrize('lattice',['hP','cI','cF','tI'])
+def test_resolved_shear_stress(np_rng,assert_allclose,lattice):
+    shape = np_rng.integers(1,4,np_rng.integers(1,4))
+    sigma = np.diag(np_rng.permutation([0,0,1]))
+    O = Orientation.from_random(shape=shape,lattice=lattice,
+                                c=(1.2 if lattice == 'tI' else None),rng=np_rng)               # noqa
+    for mode in ['slip']+([] if lattice == 'tI' else ['twin']):
+        assert np.all(np.abs(O.resolved_shear_stress(**{f'N_{mode}':'*','sigma':sigma}))<0.5)
 
 ### vectorization tests ###
 
@@ -448,19 +459,34 @@ def test_Schmid_crystal_equivalence(np_rng,assert_allclose,lattice):
 def test_Schmid_vectorization(np_rng,assert_allclose,lattice):
     shape = np_rng.integers(1,4,np_rng.integers(1,4))
     O = Orientation.from_random(shape=shape,lattice=lattice,
-                                c=(1.2 if lattice == 'tI' else None),rng_seed=np_rng)               # noqa
+                                c=(1.2 if lattice == 'tI' else None),rng=np_rng)               # noqa
     for mode in ['slip']+([] if lattice == 'tI' else ['twin']):
-        Ps = O.Schmid(N_slip='*') if mode == 'slip' else O.Schmid(N_twin='*')
+        Ps = O.Schmid(**{f'N_{mode}':'*'})
         for i in itertools.product(*map(range,tuple(shape))):
-            P = O[i].Schmid(N_slip='*') if mode == 'slip' else O[i].Schmid(N_twin='*')
+            P = O[i].Schmid(**{f'N_{mode}':'*'})
             idx = (slice(None),)+i+(slice(None),slice(None))
             assert_allclose(P,Ps[idx])
             #assert_allclose(P,Ps[:,*i,:,:])                                                        # ok for Python >= 3.13
 
+@pytest.mark.parametrize('lattice',['hP','cI','cF','tI'])
+def test_resolved_shear_stress_vectorization(np_rng,assert_allclose,lattice):
+    shape = np_rng.integers(1,4,np_rng.integers(1,4))
+    sigma = tensor.symmetric(np_rng.random((3,3)))
+    O = Orientation.from_random(shape=shape,lattice=lattice,
+                                c=(1.2 if lattice == 'tI' else None),rng=np_rng)               # noqa
+    for mode in ['slip']+([] if lattice == 'tI' else ['twin']):
+        rsss = O.resolved_shear_stress(**{f'N_{mode}':'*','sigma':sigma})
+        for i in itertools.product(*map(range,tuple(shape))):
+            rss = O[i].resolved_shear_stress(**{f'N_{mode}':'*','sigma':sigma})
+            idx = (slice(None),)+i
+            assert_allclose(rss,rsss[idx])
+            #assert_allclose(rss,rsss[:,*i])                                                        # ok for Python >= 3.13
+
+
 @pytest.mark.parametrize('family',crystal_families)
 @pytest.mark.parametrize('shape',[(1,),(2,3),(4,3,2)])
 def test_reduced_vectorization(np_rng,family,shape):
-    o = Orientation.from_random(family=family,shape=shape,rng_seed=np_rng)
+    o = Orientation.from_random(family=family,shape=shape,rng=np_rng)
     for i in itertools.product(*map(range,tuple(shape))):
         assert o[i].reduced == o[i]
 
@@ -469,10 +495,10 @@ def test_reduced_vectorization(np_rng,family,shape):
 @pytest.mark.parametrize('shape',[(1),(2,3),(4,3,2)])
 @pytest.mark.parametrize('vector',np.array([[1,0,0],[1,2,3],[-1,1,-1]]))
 @pytest.mark.parametrize('proper',[True,False])
-def test_to_SST_vectorization(np_rng,family,shape,vector,proper):
-    o = Orientation.from_random(family=family,shape=shape,rng_seed=np_rng)
+def test_to_SST_vectorization(assert_allclose,np_rng,family,shape,vector,proper):
+    o = Orientation.from_random(family=family,shape=shape,rng=np_rng)
     for r, theO in zip(o.to_SST(vector=vector,proper=proper).reshape((-1,3)),o.flatten()):
-        assert np.allclose(r,theO.to_SST(vector=vector,proper=proper))
+        assert_allclose(r,theO.to_SST(vector=vector,proper=proper))
 
 @pytest.mark.parametrize('proper',[True,False])
 @pytest.mark.parametrize('family',crystal_families)
@@ -487,10 +513,10 @@ def test_in_SST_vectorization(np_rng,family,proper):
 @pytest.mark.parametrize('vector',np.array([[1,0,0],[1,2,3],[-1,1,-1]]))
 @pytest.mark.parametrize('proper',[True,False])
 @pytest.mark.parametrize('in_SST',[True,False])
-def test_IPF_color_vectorization(np_rng,family,shape,vector,proper,in_SST):
-    o = Orientation.from_random(family=family,shape=shape,rng_seed=np_rng)
+def test_IPF_color_vectorization(assert_allclose,np_rng,family,shape,vector,proper,in_SST):
+    o = Orientation.from_random(family=family,shape=shape,rng=np_rng)
     for r, theO in zip(o.IPF_color(vector,in_SST=in_SST,proper=proper).reshape((-1,3)),o.flatten()):
-        assert np.allclose(r,theO.IPF_color(vector,in_SST=in_SST,proper=proper))
+        assert_allclose(r,theO.IPF_color(vector,in_SST=in_SST,proper=proper))
 
 @pytest.mark.parametrize('family',crystal_families)
 def test_in_FZ_vectorization(set_of_rodrigues,family):
@@ -522,8 +548,8 @@ def test_relationship_vectorization(set_of_quaternions,lattice,model):
                                        (None,None),
                                       ])
 def test_disorientation_blending(np_rng,family,left,right):
-    o = Orientation.from_random(family=family,shape=left,rng_seed=np_rng)
-    p = Orientation.from_random(family=family,shape=right,rng_seed=np_rng)
+    o = Orientation.from_random(family=family,shape=left,rng=np_rng)
+    p = Orientation.from_random(family=family,shape=right,rng=np_rng)
     blend = util.shapeblender(o.shape,p.shape)
     for loc in np_rng.integers(0,blend,(10,len(blend))):
         l = () if  left is None else tuple(np.minimum(np.array(left )-1,loc[:len(left)]))
@@ -538,15 +564,15 @@ def test_disorientation_blending(np_rng,family,left,right):
                                        (None,(3,)),
                                        (None,()),
                                       ])
-def test_IPF_color_blending(np_rng,family,left,right):
-    o = Orientation.from_random(family=family,shape=left,rng_seed=np_rng)
+def test_IPF_color_blending(assert_allclose,np_rng,family,left,right):
+    o = Orientation.from_random(family=family,shape=left,rng=np_rng)
     v = np_rng.random(right+(3,))
     blend = util.shapeblender(o.shape,v.shape[:-1])
     for loc in np_rng.integers(0,blend,(10,len(blend))):
         l = () if  left is None else tuple(np.minimum(np.array(left )-1,loc[:len(left)]))
         r = () if right is None else tuple(np.minimum(np.array(right)-1,loc[-len(right):]))
-        assert np.allclose(o[l].IPF_color(v[r]),
-                            o.IPF_color(v)[tuple(loc)])
+        assert_allclose(o[l].IPF_color(v[r]),
+                        o.IPF_color(v)[tuple(loc)])
 
 @pytest.mark.parametrize('family',crystal_families)
 @pytest.mark.parametrize('left,right',[
@@ -555,15 +581,15 @@ def test_IPF_color_blending(np_rng,family,left,right):
                                        ((3,1),(1,3)),
                                        (None,(3,)),
                                       ])
-def test_to_SST_blending(np_rng,family,left,right):
-    o = Orientation.from_random(family=family,shape=left,rng_seed=np_rng)
+def test_to_SST_blending(assert_allclose,np_rng,family,left,right):
+    o = Orientation.from_random(family=family,shape=left,rng=np_rng)
     v = np_rng.random(right+(3,))
     blend = util.shapeblender(o.shape,v.shape[:-1])
     for loc in np_rng.integers(0,blend,(10,len(blend))):
         l = () if  left is None else tuple(np.minimum(np.array(left )-1,loc[:len(left)]))
         r = () if right is None else tuple(np.minimum(np.array(right)-1,loc[-len(right):]))
-        assert np.allclose(o[l].to_SST(v[r]),
-                            o.to_SST(v)[tuple(loc)])
+        assert_allclose(o[l].to_SST(v[r]),
+                        o.to_SST(v)[tuple(loc)])
 
 @pytest.mark.parametrize('lattice,a,b,c,alpha,beta,gamma',
                         [
@@ -580,27 +606,27 @@ def test_to_SST_blending(np_rng,family,left,right):
                                        ((3,1),(1,3)),
                                        (None,(3,)),
                                       ])
-def test_to_frame_blending(np_rng,lattice,a,b,c,alpha,beta,gamma,left,right):
+def test_to_frame_blending(assert_allclose,np_rng,lattice,a,b,c,alpha,beta,gamma,left,right):
     o = Orientation.from_random(shape=left,
                                 lattice=lattice,
                                 a=a,b=b,c=c,
                                 alpha=alpha,beta=beta,gamma=gamma,
-                                rng_seed=np_rng)
+                                rng=np_rng)
     v = np_rng.random(right+(3,))
     blend = util.shapeblender(o.shape,v.shape[:-1])
     for loc in np_rng.integers(0,blend,(10,len(blend))):
         l = () if  left is None else tuple(np.minimum(np.array(left )-1,loc[:len(left)]))
         r = () if right is None else tuple(np.minimum(np.array(right)-1,loc[-len(right):]))
-    assert np.allclose(o[l].to_frame(uvw=v[r]),
-                       o.to_frame(uvw=v)[tuple(loc)])
+    assert_allclose(o[l].to_frame(uvw=v[r]),
+                    o.to_frame(uvw=v)[tuple(loc)])
 
 def test_mul_invalid(np_rng):
     with pytest.raises(TypeError):
-        Orientation.from_random(lattice='cF',rng_seed=np_rng)*np.ones(3)
+        Orientation.from_random(lattice='cF',rng=np_rng)*np.ones(3)
 
 @pytest.mark.parametrize('OR',['KS','NW','GT','GT_prime','Bain','Pitsch','Burgers'])
 @pytest.mark.parametrize('pole',[[0,0,1],[0,1,1],[1,1,1]])
-def test_OR_plot(update,res_path,tmp_path,OR,pole):
+def test_OR_plot(assert_allclose,update,res_path,tmp_path,OR,pole):
     # comparison
     # https://doi.org/10.3390/cryst13040663 (except Burgers)
     # https://doi.org/10.1016/j.actamat.2003.12.029 (Burgers)
@@ -620,4 +646,4 @@ def test_OR_plot(update,res_path,tmp_path,OR,pole):
     plt.close()
     current = np.array(Image.open(tmp_path/fname))
     reference = np.array(Image.open(res_path/fname))
-    assert np.allclose(current,reference)
+    assert_allclose(current,reference)

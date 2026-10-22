@@ -10,9 +10,6 @@ module YAML
   use misc
   use IO
   use types
-#ifdef FYAML
-  use OS
-#endif
 
   implicit none(type,external)
   private
@@ -24,26 +21,14 @@ module YAML
 
 #ifdef FYAML
   interface
-
-#ifndef OLD_STYLE_C_TO_FORTRAN_STRING
     subroutine to_flow_C(flow,mixed,stat) bind(C)
       use, intrinsic :: ISO_C_binding, only: C_INT, C_CHAR
       implicit none(type,external)
 
       character(kind=C_CHAR,len=:), allocatable, intent(out) :: flow
       integer(C_INT), intent(out) :: stat
-      character(kind=C_CHAR), dimension(*), intent(in) :: mixed
+      character(kind=C_CHAR,len=*), intent(in) :: mixed
     end subroutine to_flow_C
-#else
-    subroutine to_flow_C(flow,length_flow,mixed) bind(C)
-      use, intrinsic :: ISO_C_binding, only: C_LONG, C_CHAR, C_PTR
-      implicit none(type,external)
-
-      type(C_PTR), intent(out) :: flow
-      integer(C_LONG), intent(out) :: length_flow
-      character(kind=C_CHAR), dimension(*), intent(in) :: mixed
-    end subroutine to_flow_C
-#endif
   end interface
 #endif
 
@@ -126,44 +111,42 @@ recursive function parse_flow(YAML_flow) result(node)
     node => emptyDict
     return
   elseif (flow_string(1:1) == '{') then                                                             ! start of a dictionary
-    e = 1_pI64
     allocate(tDict::node)
-    do while (e < len_trim(flow_string,pI64))
-      s = e
-      d = s + scan(flow_string(s+1_pI64:),':',kind=pI64)
-      e = d + find_end(flow_string(d+1_pI64:),'}')
-      key = trim(adjustl(flow_string(s+1_pI64:d-1_pI64)))
-      if (quotedStr(key)) key = key(2_pI64:len(key,kind=pI64)-1_pI64)
-      myVal => parse_flow(flow_string(d+1_pI64:e-1_pI64))                                           ! parse items (recursively)
-
-      select type (node)
-        class is (tDict)
-          call node%set(key,myVal)
-      end select
-    end do
+    select type (dict => node)
+      class is (tDict)
+        e = 1_pI64
+        do while (e < len_trim(flow_string,pI64))
+          s = e
+          d = s + scan(flow_string(s+1_pI64:),':',kind=pI64)
+          e = d + find_end(flow_string(d+1_pI64:),'}')
+          key = trim(adjustl(flow_string(s+1_pI64:d-1_pI64)))
+          if (quotedStr(key)) key = key(2_pI64:len(key,kind=pI64)-1_pI64)
+          myVal => parse_flow(flow_string(d+1_pI64:e-1_pI64))                                       ! parse items (recursively)
+          call dict%set(key,myVal)
+        end do
+    end select
   elseif (flow_string(1:1) == '[') then                                                             ! start of a list
-    e = 1_pI64
     allocate(tList::node)
-    do while (e < len_trim(flow_string,pI64))
-      s = e
-      e = s + find_end(flow_string(s+1_pI64:),']')
-      myVal => parse_flow(flow_string(s+1_pI64:e-1_pI64))                                           ! parse items (recursively)
-
-      select type (node)
-        class is (tList)
-          call node%append(myVal)
-      end select
-    end do
+    select type (list => node)
+      class is (tList)
+        e = 1_pI64
+        do while (e < len_trim(flow_string,pI64))
+          s = e
+          e = s + find_end(flow_string(s+1_pI64:),']')
+          myVal => parse_flow(flow_string(s+1_pI64:e-1_pI64))                                       ! parse items (recursively)
+          call list%append(myVal)
+        end do
+    end select
   else                                                                                              ! scalar value
     allocate(tScalar::node)
-      select type (node)
-        class is (tScalar)
-          if (quotedStr(flow_string)) then
-            node = trim(adjustl(flow_string(2_pI64:len(flow_string,kind=pI64)-1_pI64)))
-          else
-            node = trim(adjustl(flow_string))
-          end if
-      end select
+    select type (scalar => node)
+      class is (tScalar)
+        if (quotedStr(flow_string)) then
+          scalar = trim(adjustl(flow_string(2_pI64:len(flow_string,kind=pI64)-1_pI64)))
+        else
+          scalar = trim(adjustl(flow_string))
+        end if
+    end select
   end if
 
 end function parse_flow
@@ -228,31 +211,14 @@ function to_flow(mixed) result(flow)
   character(len=*), intent(in) :: mixed
   character(len=:,kind=C_CHAR), allocatable :: flow
 
-#ifndef OLD_STYLE_C_TO_FORTRAN_STRING
+
   integer(C_INT) :: stat
 
 
-  call to_flow_C(flow,f_c_string(mixed),stat)
+  call to_flow_C(flow,mixed,stat)
   if (stat /= 0_C_INT) call IO_error(703_pI16,'libyfaml parser error')
-#else
-  type(C_PTR) :: str_ptr
-  integer(C_LONG) :: strlen
 
-
-  call to_flow_C(str_ptr,strlen,f_c_string(mixed))
-  if (strlen < 1_C_LONG) call IO_error(703_pI16,'libyfaml parser error')
-  allocate(character(len=strlen,kind=c_char) :: flow)
-
-  block
-    character(len=strlen,kind=c_char), pointer :: s
-    call c_f_pointer(str_ptr,s)
-    flow = s(:len(s,kind=pI64)-1_pI64)
-  end block
-
-  call free_C(str_ptr)
-#endif
 end function to_flow
-
 
 #else
 !--------------------------------------------------------------------------------------------------

@@ -1,23 +1,24 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
-import copy
-from io import StringIO
-from collections.abc import Iterable
 import abc
-from typing import Optional, Union, Any, Type, TypeVar
+import copy
+from collections.abc import Iterable
+from io import StringIO
+from typing import Any, Type, TypeVar
 
 import numpy as np
-from numpy import ma
 import yaml
+from numpy import ma
+
+
 try:
-    from yaml import CSafeLoader as SafeLoader
     from yaml import CSafeDumper as SafeDumper
+    from yaml import CSafeLoader as SafeLoader
 except ImportError:
     from yaml import SafeLoader                                                                     # type: ignore[assignment]
     from yaml import SafeDumper                                                                     # type: ignore[assignment]
 
-from ._typehints import FileHandle
-from . import Rotation
-from . import util
+from . import Rotation, util
+from ._typehints import FileHandleText
 
 
 MyType = TypeVar('MyType', bound='YAML')
@@ -45,7 +46,7 @@ class NiceDumper(SafeDumper):
         return True
 
     def write_line_break(self,
-                         data: Optional[str] = None):                                               # not for CSafeDumper
+                         data: str | None = None):                                                  # not for CSafeDumper
         """From https://github.com/yaml/pyyaml/issues/127."""
         super().write_line_break(data)                                                              # type: ignore[misc]
 
@@ -71,7 +72,7 @@ class YAML(dict):
     """YAML-based configuration."""
 
     def __init__(self,
-                 config: Optional[Union[str, dict[str, Any]]] = None,
+                 config: str | dict[str, Any] | None = None,
                  **kwargs):
         """
         New YAML-based configuration.
@@ -79,7 +80,8 @@ class YAML(dict):
         Parameters
         ----------
         config : dict or str, optional
-            YAML. String needs to be valid YAML.
+            Configuration, string needs to be valid YAML
+            with dictionary at top-level.
         **kwargs : arbitrary key–value pairs, optional
             Top-level entries of the configuration.
 
@@ -92,6 +94,8 @@ class YAML(dict):
             kwargs = yaml.load(config, Loader=SafeLoader) | kwargs
         elif isinstance(config,dict):
             kwargs = config | kwargs
+        elif config is not None:
+            raise TypeError('invalid configuration data')
 
         super().__init__(**kwargs)
 
@@ -158,7 +162,7 @@ class YAML(dict):
 
 
     def delete(self: MyType,
-               keys: Union[Iterable, str]) -> MyType:
+               keys: str | Iterable[str]) -> MyType:
         """
         Remove configuration keys.
 
@@ -180,9 +184,9 @@ class YAML(dict):
 
     @classmethod
     def load(cls: Type[MyType],
-             fname: FileHandle) -> MyType:
+             fname: FileHandleText) -> MyType:
         """
-        Load from YAML file.
+        Load from YAML file with a dictionary at the top-level.
 
         Parameters
         ----------
@@ -199,7 +203,7 @@ class YAML(dict):
 
 
     def save(self,
-             fname: FileHandle,
+             fname: FileHandleText,
              **kwargs):
         """
         Save to YAML file.

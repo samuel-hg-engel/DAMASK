@@ -1,15 +1,18 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 """Functionality for generation of seed points for Voronoi or Laguerre tessellation."""
 
-from typing import Optional as _Optional, NamedTuple as _NamedTuple
+from typing import NamedTuple as _NamedTuple
 
-from scipy import spatial as _spatial
 import numpy as _np
+from numpy import typing as _npt
+from scipy import spatial as _spatial
 
-from ._typehints import FloatSequence as _FloatSequence, IntSequence as _IntSequence, \
-                        NumpyRngSeed as _NumpyRngSeed
+from . import grid as _grid
 from . import util as _util
-from . import grid_filters as _grid_filters
+from ._typehints import FloatSequence as _FloatSequence
+from ._typehints import IntSequence as _IntSequence
+from ._typehints import RNGLike as _RNGLike
+from ._typehints import SeedLike as _SeedLike
 
 
 class FromGridTuple(_NamedTuple):
@@ -20,15 +23,15 @@ class FromGridTuple(_NamedTuple):
     and cells and size using Voronoi tessellation.
     """
 
-    coords: _np.ndarray
-    materials: _np.ndarray
+    coordinates: _npt.NDArray[_np.floating]
+    materials: _npt.NDArray[_np.integer]
 
 
 
 def from_random(size: _FloatSequence,
                 N_seeds: int,
-                cells: _Optional[_IntSequence] = None,
-                rng_seed: _Optional[_NumpyRngSeed] = None) -> _np.ndarray:
+                cells: _IntSequence | None = None,
+                rng: _RNGLike | _SeedLike | None = None) -> _npt.NDArray[_np.floating]:
     """
     Place seeds randomly in space.
 
@@ -41,23 +44,25 @@ def from_random(size: _FloatSequence,
     cells : sequence of int, len (3), optional
         If given, ensures that each seed results in a grain when a standard Voronoi
         tessellation is performed using the given grid resolution (i.e. size/cells).
-    rng_seed : {None, int, array_like[ints], SeedSequence, BitGenerator, Generator}, optional
-        A seed to initialize the BitGenerator. Defaults to None.
-        If None, then fresh, unpredictable entropy will be pulled from the OS.
+    rng : numpy.random.Generator, optional
+        Pseudorandom number generator state. When rng is None, a new
+        numpy.random.Generator is created using entropy from the operating
+        system. Types other than numpy.random.Generator are passed to
+        numpy.random.default_rng to instantiate a ``Generator``.
 
     Returns
     -------
-    coords : numpy.ndarray, shape (N_seeds,3)
+    coordinates : numpy.ndarray, shape (N_seeds,3)
         Seed coordinates in 3D space.
     """
     size_ = _np.asarray(size,float)
-    rng = _np.random.default_rng(rng_seed)
+    rng = _np.random.default_rng(rng)
     if cells is None:
         coords = rng.random((N_seeds,3)) * size_
     else:
-        grid_coords = _grid_filters.coordinates0_point(cells,size).reshape(-1,3,order='F')
+        grid_coords = _grid.coordinates0_point(cells,size).reshape(-1,3,order='F')
         coords = grid_coords[rng.choice(_np.prod(cells),N_seeds,replace=False)] \
-               + _np.broadcast_to(size_/_np.array(cells,_np.int64),(N_seeds,3))*(rng.random((N_seeds,3))*.5-.25) # wobble w/o leaving grid
+               + (size_/_np.array(cells,_np.int64))*(rng.random((N_seeds,3))*.5-.25) # wobble w/o leaving grid
 
     return coords
 
@@ -67,7 +72,7 @@ def from_Poisson_disc(size: _FloatSequence,
                       N_candidates: int,
                       distance: float,
                       periodic: bool = True,
-                      rng_seed: _Optional[_NumpyRngSeed] = None) -> _np.ndarray:
+                      rng: _RNGLike | _SeedLike | None = None) -> _npt.NDArray[_np.floating]:
     """
     Place seeds following a Poisson disc distribution.
 
@@ -84,17 +89,24 @@ def from_Poisson_disc(size: _FloatSequence,
     periodic : bool, optional
         Calculate minimum distance for periodically repeated grid.
         Defaults to True.
-    rng_seed : {None, int, array_like[ints], SeedSequence, BitGenerator, Generator}, optional
-        A seed to initialize the BitGenerator. Defaults to None.
-        If None, then fresh, unpredictable entropy will be pulled from the OS.
+    rng : numpy.random.Generator, optional
+        Pseudorandom number generator state. When rng is None, a new
+        numpy.random.Generator is created using entropy from the operating
+        system. Types other than numpy.random.Generator are passed to
+        numpy.random.default_rng to instantiate a ``Generator``.
 
     Returns
     -------
     coords : numpy.ndarray, shape (N_seeds,3)
         Seed coordinates in 3D space.
+
+    Raises
+    ------
+    ValueError
+        If 'N_seeds' seeds cannot be placed with the given minimum 'distance'.
     """
     size_ = _np.asarray(size,float)
-    rng = _np.random.default_rng(rng_seed)
+    rng = _np.random.default_rng(rng)
     coords = _np.empty((N_seeds,3))
 
     s = 0
@@ -102,7 +114,7 @@ def from_Poisson_disc(size: _FloatSequence,
     progress = _util.ProgressBar(N_seeds,'',50)
     while s < N_seeds:
         i += 1
-        candidates = rng.random((N_candidates,3))*_np.broadcast_to(size_,(N_candidates,3))
+        candidates = rng.random((N_candidates,3))*size_
         tree = _spatial.cKDTree(coords[:s],boxsize=size_ if periodic else None)
         distances = _np.asarray(tree.query(candidates)[0])
         if distances.max() > distance:                                                              # require minimum separation
@@ -118,7 +130,7 @@ def from_Poisson_disc(size: _FloatSequence,
 
 
 def from_grid(grid,
-              selection: _Optional[_IntSequence] = None,
+              selection: _IntSequence | None = None,
               invert_selection: bool = False,
               average: bool = False,
               periodic: bool = True) -> FromGridTuple:
@@ -159,7 +171,7 @@ def from_grid(grid,
     >>> import scipy.spatial
     >>> import damask
     >>> seeds = damask.seeds.from_random(size=np.ones(3),N_seeds=29,cells=[128]*3,
-    ...                                  rng_seed=20191102)
+    ...                                  rng=20191102)
     >>> (g := damask.GeomGrid.from_Voronoi_tessellation(cells=[128]*3,size=np.ones(3),seeds=seeds))
     cells:  128 × 128 × 128
     size:   1.0 × 1.0 × 1.0 m³
@@ -175,7 +187,7 @@ def from_grid(grid,
     material = grid.material.reshape((-1,1),order='F')
     mask = _np.full(grid.cells.prod(),True,dtype=bool) if selection is None else \
            _np.isin(material,selection,invert=invert_selection).flatten()
-    coords = _grid_filters.coordinates0_point(grid.cells,grid.size).reshape(-1,3,order='F')
+    coords = _grid.coordinates0_point(grid.cells,grid.size).reshape(-1,3,order='F')
 
     if not average:
         return FromGridTuple(coords[mask],material[mask])

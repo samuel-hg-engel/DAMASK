@@ -20,7 +20,7 @@ module CLI
   implicit none(type,external)
   private
   integer,                       public, protected :: &
-    CLI_restartInc = 0                                                                              !< increment at which calculation starts
+    CLI_restartInc = -1                                                                             !< increment at which calculation starts
   character(len=:), allocatable, public, protected :: &
     CLI_geomFile, &                                                                                 !< location of the geometry file
     CLI_loadFile, &                                                                                 !< location of the load case file
@@ -29,7 +29,7 @@ module CLI
     CLI_jobName, &                                                                                  !< name of the job (will be used for DADF5 result file)
     CLI_jobID                                                                                       !< unique job ID (UUID)
 
-#if (defined(BOOST) && !defined(OLD_STYLE_C_TO_FORTRAN_STRING))
+#ifdef BOOST
    type :: tCLIBuffer
       character(len=:, kind=C_CHAR), pointer :: buf
    end type tCLIBuffer
@@ -43,16 +43,16 @@ module CLI
    end type tCLIArgs
 
 interface
-  function C_CLI__new(argc, argv, worldrank) result(this) bind(C, name='CLI__new')
+  function C_CLI_new(argc, argv, worldrank) result(this) bind(C, name='C_CLI_new')
     use, intrinsic :: ISO_C_binding, only: C_INT, C_PTR
     integer(C_INT), intent(in) :: argc
     type(C_PTR),    intent(in) :: argv(*) ! MD I think this should be dimension(:), but wait for working ifx
     integer(C_INT), intent(in) :: worldrank
     type(C_PTR)                :: this
-  end function C_CLI__new
+  end function C_CLI_new
 
   subroutine C_CLI_getParsedArgs(cli, geom, load, material, numerics, jobname, uuid, restart, stat) &
-      bind(C, name='CLI_getParsedArgs')
+      bind(C, name='C_CLI_getParsedArgs')
     use ISO_C_binding
     type(C_PTR), value :: cli
     character(kind=C_CHAR,len=:), allocatable, intent(out) :: geom, load, material, numerics, jobname, uuid
@@ -77,20 +77,16 @@ subroutine CLI_init()
 #if PETSC_VERSION_MAJOR!=3 || PETSC_VERSION_MINOR<PETSC_MINOR_MIN || PETSC_VERSION_MINOR>PETSC_MINOR_MAX
 --  UNSUPPORTED PETSc VERSION --- UNSUPPORTED PETSc VERSION --- UNSUPPORTED PETSc VERSION ---
 #endif
-#if   PETSC_VERSION_MINOR==19
-#define PETSC_DOI '10.2172/1968587'
-#elif PETSC_VERSION_MINOR==20
-#define PETSC_DOI '10.2172/2205494'
-#elif PETSC_VERSION_MINOR==21
-#define PETSC_DOI '10.2172/2337606'
-#elif PETSC_VERSION_MINOR==22
+#if PETSC_VERSION_MINOR==22
 #define PETSC_DOI '10.2172/2476320'
 #elif PETSC_VERSION_MINOR==23
 #define PETSC_DOI '10.2172/2565610'
 #elif PETSC_VERSION_MINOR==24
 #define PETSC_DOI '10.2172/2998643'
+#elif PETSC_VERSION_MINOR==25
+#define PETSC_DOI '10.2172/3025790'
 #endif
-#if (defined(BOOST) && !defined(OLD_STYLE_C_TO_FORTRAN_STRING))
+#ifdef BOOST
   type(C_PTR) :: CLI_ = C_NULL_PTR
   type(tCLIArgs) :: cliArgs
   integer(C_INT) :: stat
@@ -113,12 +109,12 @@ subroutine CLI_init()
 
   print'(/,1x,a)', '<<<+-  CLI init  -+>>>'
 
-#if (defined(BOOST) && !defined(OLD_STYLE_C_TO_FORTRAN_STRING))
+#ifdef BOOST
   print'(/,1x,a)', 'Using C++ parser'
 
   call cliArgs%copyCommandLineArgs()
   ! https://fortran-lang.discourse.group/t/c-interoperability-command-line-arguments/5773/7
-  CLI_ = C_CLI__new(cliArgs%argc, cliArgs%argv, worldrank)
+  CLI_ = C_CLI_new(cliArgs%argc, cliArgs%argv, worldrank)
   call C_CLI_getParsedArgs(CLI_, CLI_geomFile, CLI_loadFile, CLI_materialFile, &
                            CLI_numericsFile, CLI_jobID, CLI_jobName, CLI_restartInc, stat)
   if (stat /= 0) error stop 'could not collect parsed args from CLI.cpp'
@@ -158,8 +154,9 @@ subroutine CLI_init()
 #endif
   print'(/,1x,a)', 'Version: '//DAMASK_VERSION
 
-  ! https://github.com/jeffhammond/HPCInfo/blob/master/docs/Preprocessor-Macros.md
-  print'(/,1x,a)', 'Compiled with: '//compiler_version()
+  print'(/,1x,a)', 'Fortran Compiler: '//DAMASK_FORTRAN_COMPILER_ID//' '//DAMASK_FORTRAN_COMPILER_VERSION
+  print'(1x,a)',   'C Compiler: '//DAMASK_C_COMPILER_ID//' '//DAMASK_C_COMPILER_VERSION
+  print'(1x,a)',   'C++ Compiler: '//DAMASK_CXX_COMPILER_ID//' '//DAMASK_CXX_COMPILER_VERSION
   call printCompileOptions()
   print'(1x,a,1x,i0,a,i0,a,i0)', &
                    'PETSc version:',PETSC_VERSION_MAJOR,'.',PETSC_VERSION_MINOR,'.',PETSC_VERSION_SUBMINOR
@@ -181,7 +178,8 @@ subroutine CLI_init()
       val = flag(s+1:)
       flag = flag(:s-1)
     else
-      if (i > command_argument_count()) call IO_error(610,ext_msg=flag)
+      if (i > command_argument_count()) &
+        call IO_error(610_pI16,'missing value for flag', flag, emph=[2])
       val = getArg(i)
       i = i + 1
     end if
@@ -201,17 +199,20 @@ subroutine CLI_init()
         workingDirArg = val
 #if defined(GRID)
       case ('-r', '--rs', '--restart')
-        CLI_restartInc = IO_strAsInt(val)
-        if (CLI_restartInc < 0) call IO_error(611,ext_msg=val,label1='--restart')
+        if (IO_strAsInt(val) < 0) then
+          call IO_error(610_pI16, 'invalid value', val, 'for flag', flag, emph=[2,4])
+        else
+          CLI_restartInc = IO_strAsInt(val)
+        end if
 #endif
       case default
-        call IO_error(613,ext_msg=flag)
+        call IO_error(610_pI16, 'invalid flag', flag, emph=[2])
     end select
   end do
 
-  if (.not. allocated(geomArg))     call IO_error(612,ext_msg='--geom')
-  if (.not. allocated(loadArg))     call IO_error(612,ext_msg='--load')
-  if (.not. allocated(materialArg)) call IO_error(612,ext_msg='--material')
+  if (.not. allocated(geomArg))     call IO_error(610_pI16, 'missing flag', '--geom', emph=[2])
+  if (.not. allocated(loadArg))     call IO_error(610_pI16, 'missing flag', '--load', emph=[2])
+  if (.not. allocated(materialArg)) call IO_error(610_pI16, 'missing flag', '--material', emph=[2])
 
   call setWorkingDirectory(trim(workingDirArg))
   CLI_geomFile = getPathRelCWD(geomArg)
@@ -223,7 +224,7 @@ subroutine CLI_init()
   if (.not. allocated(CLI_jobName)) then
     CLI_jobName = jobname(CLI_geomFile,CLI_loadFile,CLI_materialFile,CLI_numericsFile)
   elseif (scan(CLI_jobName,'/') > 0) then
-    call IO_error(612,ext_msg=CLI_jobName,label1='--jobname')
+    call IO_error(610_pI16, 'path separator in jobname', CLI_jobName, emph=[2])
   endif
 
   commandLine = getArg(-1)
@@ -239,10 +240,7 @@ subroutine CLI_init()
   if (allocated(numericsArg)) &
     print'(1x,a)',      'Numerics config:    '//IO_glueDiffering(CLI_numericsFile,numericsArg)
   print'(1x,a)',        'Job name:           '//CLI_jobName
-#if (defined(BOOST) && !defined(OLD_STYLE_C_TO_FORTRAN_STRING))
-  print'(1x,a)',        'Job ID:             '//CLI_jobID
-#endif
-  if (CLI_restartInc > 0) &
+  if (CLI_restartInc /= -1) &
     print'(1x,a,i0)',   'Restart increment:  ', CLI_restartInc
 #endif
 
@@ -311,7 +309,7 @@ subroutine printCompileOptions() bind(C, name="F_printCompileOptions")
 
 end subroutine printCompileOptions
 
-#if (defined(BOOST) && !defined(OLD_STYLE_C_TO_FORTRAN_STRING))
+#ifdef BOOST
 !--------------------------------------------------------------------------------------------------
 !> @brief Copy command line args to c strings for boost-processing,
 !         allocate one extra element for the NULL termination.

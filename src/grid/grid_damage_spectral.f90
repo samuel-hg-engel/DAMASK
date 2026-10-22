@@ -10,9 +10,10 @@
 module grid_damage_spectral
   use PETScDMDA
   use PETScSNES
-#ifndef PETSC_HAVE_MPI_F90MODULE_VISIBILITY
+#ifndef PETSC_EXPOSES_MPI
   use MPI_f08
 #endif
+  use HDF5
 
   use prec
   use parallelization
@@ -20,14 +21,13 @@ module grid_damage_spectral
   use misc
   use CLI
   use HDF5_utilities
-  use HDF5
   use spectral_utilities
   use discretization_grid
   use homogenization
   use types
   use config
 
-#ifndef PETSC_HAVE_MPI_F90MODULE_VISIBILITY
+#ifndef PETSC_EXPOSES_MPIF90
   implicit none(type,external)
 #else
   implicit none
@@ -133,7 +133,7 @@ subroutine grid_damage_spectral_init(num_grid_damage)
          int(cells(1),pPETSCINT),int(cells(2),pPETSCINT),int(cells(3),pPETSCINT), &                 ! global cells
          1_pPETSCINT, 1_pPETSCINT, int(worldsize,pPETSCINT), &
          1_pPETSCINT, 0_pPETSCINT, &                                                                ! #dof (phi, scalar), ghost boundary width (domain overlap)
-         [int(cells(1),pPetscInt)],[int(cells(2),pPetscInt)],int(cells3_global,pPETSCINT), &        ! local cells
+         [int(cells(1),pPETSCINT)],[int(cells(2),pPETSCINT)],int(cells3_global,pPETSCINT), &        ! local cells
          DM_damage,err_PETSc)                                                                       ! handle, error
   CHKERRQ(err_PETSc)
   call DMsetFromOptions(DM_damage,err_PETSc)
@@ -171,7 +171,7 @@ subroutine grid_damage_spectral_init(num_grid_damage)
   call DMDAVecGetArray(DM_damage,phi_vec,phi,err_PETSc)                                             ! returns 0-indexed phi
   CHKERRQ(err_PETSc)
 
-  restartRead: if (CLI_restartInc > 0) then
+  restartRead: if (CLI_restartInc /= -1) then
     print'(/,1x,a,1x,i0)', 'loading restart data of increment', CLI_restartInc
 
     fileHandle  = HDF5_openFile(CLI_jobName//'_restart.hdf5','r')
@@ -182,6 +182,9 @@ subroutine grid_damage_spectral_init(num_grid_damage)
     call HDF5_read(tempN,groupHandle,'phi_lastinc',.false.)
     phi_lastinc = reshape(tempN,[cells(1),cells(2),cells3])
     phi_staginc = phi_lastinc
+
+    call HDF5_closeGroup(groupHandle)
+    call HDF5_closeFile(fileHandle)
   else
     phi = discretization_grid_getScalarInitialCondition('phi')
     phi_lastinc = phi(0:,0:,lbound(phi,3):)
@@ -331,11 +334,7 @@ end subroutine grid_damage_spectral_restartWrite
 !--------------------------------------------------------------------------------------------------
 subroutine form_residual(residual_subdomain,phi,r,dummy,err_PETSc)
 
-#if PETSC_VERSION_MINOR<22
-  DMDALocalInfo, dimension(DMDA_LOCAL_INFO_SIZE) :: &
-#else
   DMDALocalInfo :: &
-#endif
     residual_subdomain
   real(pREAL), dimension(cells(1),cells(2),cells3), intent(in) :: &
     phi                                                                                             !< phase field

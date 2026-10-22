@@ -7,23 +7,22 @@
 #include <petsc/finclude/petscsys.h>
 #endif
 module parallelization
-  use, intrinsic :: ISO_fortran_env, only: &
+  use, intrinsic :: ISO_Fortran_env, only: &
     OUTPUT_UNIT, &
     ERROR_UNIT
 
-  use constants
-
 #ifdef PETSC
   use PETScSys
-#ifndef PETSC_HAVE_MPI_F90MODULE_VISIBILITY
+#ifndef PETSC_EXPOSES_MPI
   use MPI_f08
 #endif
 !$ use OMP_LIB
 #endif
 
+  use constants
   use prec
 
-#ifndef PETSC_HAVE_MPI_F90MODULE_VISIBILITY
+#ifndef PETSC_EXPOSES_MPIF90
   implicit none(type,external)
 #else
   implicit none
@@ -173,7 +172,7 @@ end subroutine parallelization_chkerr
 
 
 !--------------------------------------------------------------------------------------------------
-!> @brief Broadcast a string from process 0.
+!> @brief Broadcast a variable-length string from process 0.
 !--------------------------------------------------------------------------------------------------
 subroutine parallelization_bcast_str(str)
 
@@ -184,7 +183,10 @@ subroutine parallelization_bcast_str(str)
 
   if (worldrank == 0) strlen = len(str,MPI_INTEGER_KIND)
   call MPI_Bcast(strlen,1_MPI_INTEGER_KIND,MPI_INTEGER,0_MPI_INTEGER_KIND,MPI_COMM_WORLD, err_MPI)
-  if (worldrank /= 0) allocate(character(len=strlen)::str)
+  if (worldrank /= 0) then
+    if (allocated(str)) deallocate(str)
+    allocate(character(len=strlen)::str)
+  end if
 
   call MPI_Bcast(str,strlen,MPI_CHARACTER,0_MPI_INTEGER_KIND,MPI_COMM_WORLD, err_MPI)
 

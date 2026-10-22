@@ -1,16 +1,20 @@
 ! SPDX-License-Identifier: AGPL-3.0-or-later
-module grid_chemical_FDM
 #include <petsc/finclude/petscsnes.h>
 #include <petsc/finclude/petscdmda.h>
+module grid_chemical_FDM
   use PETScDMDA
   use PETScSNES
-#ifndef PETSC_HAVE_MPI_F90MODULE_VISIBILITY
+#ifndef PETSC_EXPOSES_MPI
   use MPI_f08
 #endif
+  use HDF5
 
   use prec
   use parallelization
   use IO
+  use misc
+  use CLI
+  use HDF5_utilities
   use spectral_utilities
   use discretization_grid
   use homogenization
@@ -19,7 +23,7 @@ module grid_chemical_FDM
   use config
   use math
 
-#ifndef PETSC_HAVE_MPI_F90MODULE_VISIBILITY
+#ifndef PETSC_EXPOSES_MPIF90
   implicit none(type,external)
 #else
   implicit none
@@ -58,13 +62,13 @@ module grid_chemical_FDM
   public :: &
     grid_chemical_FDM_init, &
     grid_chemical_FDM_solution, &
+    grid_chemical_FDM_restartWrite, &
     grid_chemical_FDM_forward
 
 contains
 
 !--------------------------------------------------------------------------------------------------
-!> @brief Allocate all necessary fields and fill them with data.
-! ToDo: Restart not implemented
+!> @brief Allocate all necessary fields and fill them with data, potentially from restart info.
 !--------------------------------------------------------------------------------------------------
 subroutine grid_chemical_FDM_init(num_grid_chemical)
 
@@ -75,8 +79,10 @@ subroutine grid_chemical_FDM_init(num_grid_chemical)
   DM :: DM_chemical
   PetscReal, dimension(:,:,:,:), pointer :: mu
   PetscErrorCode :: err_PETSc
+  integer(HID_T) :: fileHandle, groupHandle
   integer(MPI_INTEGER_KIND) :: err_MPI
   real(pREAL), dimension(:,:,:,:), allocatable :: mu_0
+  real(pREAL), dimension(:,:),     allocatable :: tempN
   character(len=:), allocatable :: petsc_options
 
 
@@ -85,17 +91,15 @@ subroutine grid_chemical_FDM_init(num_grid_chemical)
   print'(/,1x,a)', 'P. Shanthraj et al., Computer Methods in Applied Mechanics and Engineering, 2020'
   print'(  1x,a)', 'https://doi.org/10.1016/j.cma.2020.113029'
 
-  allocate(mu_0(homogenization_chemical_maxNcomponents-1,cells(1),cells(2),cells3),source=0.0_pREAL)
-  do com = 1, homogenization_chemical_maxNcomponents - 1
-    mu_0(com,:,:,:) = discretization_grid_getScalarInitialCondition(material_name_species(com))
-  end do
 
   N_components = homogenization_chemical_maxNcomponents - 1
+  allocate(mu_0(N_components,cells(1),cells(2),cells3),    source=0.0_pREAL)
+  allocate(tempN(N_components,product(cells(1:2))*cells3), source=0.0_pREAL)
 !-------------------------------------------------------------------------------------------------
 ! read numerical parameters and do sanity checks
-  num%itmax             = num_grid_chemical%get_asInt  ('itmax',           defaultVal=250)
-  num%eps_chemical_atol = num_grid_chemical%get_asReal('eps_chemical_atol',defaultVal=1.0e-6_pREAL)
-  num%eps_chemical_rtol = num_grid_chemical%get_asReal('eps_chemical_rtol',defaultVal=1.0e-6_pREAL)
+  num%itmax             = num_grid_chemical%get_asInt ('N_iter_max',   defaultVal=250)
+  num%eps_chemical_atol = num_grid_chemical%get_asReal('eps_abs_conc', defaultVal=1.0e-6_pREAL)
+  num%eps_chemical_rtol = num_grid_chemical%get_asReal('eps_rel_conc', defaultVal=1.0e-6_pREAL)
 
   if (num%itmax <= 1)                     call IO_error(301,ext_msg='itmax')
   if (num%eps_chemical_atol <= 0.0_pREAL) call IO_error(301,ext_msg='eps_chemical_atol')
@@ -119,10 +123,10 @@ subroutine grid_chemical_FDM_init(num_grid_chemical)
   call DMDACreate3D(PETSC_COMM_WORLD, &
          DM_BOUNDARY_PERIODIC, DM_BOUNDARY_PERIODIC, DM_BOUNDARY_PERIODIC, &                        ! cut off stencil at boundary
          DMDA_STENCIL_BOX, &                                                                        ! Moore (26) neighborhood around central point
-         int(cells(1),pPetscInt),int(cells(2),pPetscInt),int(cells(3),pPetscInt), &                 ! global grid
-         1_pPetscInt, 1_pPetscInt, int(worldsize,pPetscInt), &
-         int(N_components,pPetscInt), 1_pPetscInt, &                                                ! #dof (mu field), ghost boundary width (domain overlap)
-         [int(cells(1),pPetscInt)],[int(cells(2),pPetscInt)],cells3_global, &                                ! local grid
+         int(cells(1),pPETSCINT),int(cells(2),pPETSCINT),int(cells(3),pPETSCINT), &                 ! global grid
+         1_pPETSCINT, 1_pPETSCINT, int(worldsize,pPETSCINT), &
+         int(N_components,pPETSCINT), 1_pPETSCINT, &                                                ! #dof (mu field), ghost boundary width (domain overlap)
+         [int(cells(1),pPETSCINT)],[int(cells(2),pPETSCINT)],cells3_global, &                       ! local grid
          DM_chemical,err_PETSc)                                                                     ! handle, error
   CHKERRQ(err_PETSc)
   call SNESSetDM(SNES_chemical,DM_chemical,err_PETSc); CHKERRQ(err_PETSc)                           ! connect snes to da
@@ -136,7 +140,7 @@ subroutine grid_chemical_FDM_init(num_grid_chemical)
   CHKERRQ(err_PETSc)
   call DMSNESSetJacobianLocal(DM_chemical,form_jacobian,PETSC_NULL_SNES,err_PETSc)                  ! function to evaluate stiffness matrix
   CHKERRQ(err_PETSc)
-  call SNESSetMaxLinearSolveFailures(SNES_chemical, huge(1_pPetscInt), err_PETSc)
+  call SNESSetMaxLinearSolveFailures(SNES_chemical, huge(1_pPETSCINT), err_PETSc)
   CHKERRQ(err_PETSc)
   call SNESSetFromOptions(SNES_chemical,err_PETSc); CHKERRQ(err_PETSc)
 
@@ -151,6 +155,24 @@ subroutine grid_chemical_FDM_init(num_grid_chemical)
 
   call DMDAVecGetArray(DM_chemical,mu_vec,mu,err_PETSc)
   CHKERRQ(err_PETSc)
+
+  restartRead: if (CLI_restartInc /= -1) then
+    print'(/,1x,a,1x,i0)', 'loading restart data of increment', CLI_restartInc
+
+    fileHandle  = HDF5_openFile(CLI_jobName//'_restart.hdf5','r')
+    groupHandle = HDF5_openGroup(fileHandle,'solver')
+
+    call HDF5_read(tempN,groupHandle,'mu',.false.)
+    mu_0 = reshape(tempN,[N_components,cells(1),cells(2),cells3])
+
+   call HDF5_closeGroup(groupHandle)
+   call HDF5_closeFile(fileHandle)
+  else
+    do com = 1, N_components
+      mu_0(com,:,:,:) = discretization_grid_getScalarInitialCondition('mu_' // trim(material_name_species(com)))
+    end do
+  end if restartRead
+
   ce = 0
   do k = 1,cells3; do j = 1, cells(2); do i = 1, cells(1)
     ce = ce + 1
@@ -301,6 +323,36 @@ subroutine grid_chemical_FDM_forward(cutBack)
 
 
 end subroutine grid_chemical_FDM_forward
+
+
+!--------------------------------------------------------------------------------------------------
+!> @brief Write current solver and constitutive data for restart to file.
+!--------------------------------------------------------------------------------------------------
+subroutine grid_chemical_FDM_restartWrite()
+
+  PetscErrorCode :: err_PETSc
+  DM :: da_local
+  integer(HID_T) :: fileHandle, groupHandle
+  real(pREAL), dimension(:,:,:,:), pointer :: mu
+
+
+  call SNESGetDM(SNES_chemical,da_local,err_PETSc)
+  CHKERRQ(err_PETSc)
+  call DMDAVecGetArrayRead(da_local,mu_vec,mu,err_PETSc)
+  CHKERRQ(err_PETSc)
+
+  print'(1x,a)', 'saving chemical solver data required for restart'; flush(IO_STDOUT)
+
+  fileHandle  = HDF5_openFile(CLI_jobName//'_restart.hdf5','a')
+  groupHandle = HDF5_openGroup(fileHandle,'solver')
+  call HDF5_write(reshape(mu,[N_components,product(shape(mu))/N_components]),groupHandle,'mu')
+  call HDF5_closeGroup(groupHandle)
+  call HDF5_closeFile(fileHandle)
+
+  call DMDAVecRestoreArrayRead(da_local,mu_vec,mu,err_PETSc);
+  CHKERRQ(err_PETSc)
+
+end subroutine grid_chemical_FDM_restartWrite
 
 
 !--------------------------------------------------------------------------------------------------
@@ -620,10 +672,10 @@ subroutine form_jacobian(da_local,solution_current_local,Jac_mat,Jac_pre_mat,dum
                                                  - mobility_backward(dir,:,:) * Delta_t_/delta(dir)**2
     end do
 #if PETSC_VERSION_MINOR<23
-    call MatSetValuesStencil(Jac_mat,int(N_components,pPetscInt),row,int(7*N_components,pPetscInt),&
+    call MatSetValuesStencil(Jac_mat,int(N_components,pPETSCINT),row,int(7*N_components,pPETSCINT),&
                              col,transpose(Jac),INSERT_VALUES,err_PETSc)
 #else
-    call MatSetValuesStencil(Jac_mat,int(N_components,pPetscInt),row,int(7*N_components,pPetscInt),&
+    call MatSetValuesStencil(Jac_mat,int(N_components,pPETSCINT),row,int(7*N_components,pPETSCINT),&
                              col,reshape(transpose(Jac),[size(Jac)]),INSERT_VALUES,err_PETSc)
 #endif
     CHKERRQ(err_PETSc)

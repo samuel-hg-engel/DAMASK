@@ -1,29 +1,108 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
-"""Functionality for typehints."""
+"""Functionality for type hints."""
 
-from typing import Sequence, Union, TypedDict, Literal, TextIO
-from pathlib import Path
+from os import PathLike
+from collections.abc import Sequence
+from typing import Any, Literal, BinaryIO, TextIO, TypedDict
 
 import numpy as np
+import numpy.typing as npt
 
 
-FloatSequence = Union[np.ndarray,Sequence[float]]
-IntSequence = Union[np.ndarray,Sequence[int]]
-StrSequence = Union[np.ndarray,Sequence[str]]
-FileHandle = Union[TextIO, str, Path]
-CrystalFamily = Literal['triclinic', 'monoclinic', 'orthorhombic', 'tetragonal', 'hexagonal', 'cubic']
-BravaisLattice = Literal['aP', 'mP', 'mS', 'oP', 'oS', 'oI', 'oF', 'tP', 'tI', 'hP', 'cP', 'cI', 'cF']
-CrystalKinematics = Literal['slip', 'twin']
-NumpyRngSeed = Union[int, IntSequence, np.random.SeedSequence, np.random.BitGenerator, np.random.Generator]
+FloatSequence = npt.NDArray[np.floating] | Sequence[float]
+IntSequence = npt.NDArray[np.integer] | Sequence[int]
+StrSequence = npt.NDArray[np.str_] | Sequence[str]
+
+FileHandleText = (
+    TextIO
+    | str
+    | PathLike[str]
+)
+
+FileHandleBinary = (
+    BinaryIO
+    | str
+    | PathLike[str]
+)
+
+CrystalFamily = Literal[
+    'triclinic',
+    'monoclinic',
+    'orthorhombic',
+    'tetragonal',
+    'hexagonal',
+    'cubic',
+]
+
+BravaisLattice = Literal[
+    'aP',
+    'mP',
+    'mS',
+    'oP',
+    'oS',
+    'oI',
+    'oF',
+    'tP',
+    'tI',
+    'hP',
+    'cP',
+    'cI',
+    'cF',
+]
+
+CrystalKinematics = Literal[
+    'slip',
+    'twin',
+]
+
+# https://scientific-python.org/specs/spec-0007/
+SeedLike = (
+    int
+    | np.integer
+    | IntSequence
+    | np.random.SeedSequence
+)
+RNGLike = (
+    np.random.Generator
+    | np.random.BitGenerator
+)
 
 # https://peps.python.org/pep-0655/
-# Metadata = TypedDict('Metadata', {'unit': str, 'description': str, 'creator': str, 'lattice': NotRequired[str]})
-_Metadata = TypedDict('_Metadata', {'lattice': str, 'c/a': float}, total=False)
+# Metadata = TypedDict(
+#     'Metadata',
+#     {
+#         'unit': str,
+#         'description': str,
+#         'creator': str,
+#         'lattice': NotRequired[str],
+#     },
+# )
+
+_Metadata = TypedDict(
+    '_Metadata',
+    {
+        'family': CrystalFamily,
+        'lattice': BravaisLattice,
+        'c/a': float,
+        'systems': list[str],
+        'created': str,
+        'overwritten': bool
+    },
+    total=False,
+)
+
 
 class Metadata(_Metadata):
-    unit: str
     description: str
+    unit: str
     creator: str
 
 
-DADF5Dataset = TypedDict('DADF5Dataset', {'data': np.ndarray, 'label': str, 'meta': Metadata})
+DADF5Dataset = TypedDict(
+    'DADF5Dataset',
+    {
+        'data': npt.NDArray[Any],
+        'label': str,
+        'meta': Metadata,
+    },
+)

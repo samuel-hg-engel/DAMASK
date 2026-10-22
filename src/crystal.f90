@@ -33,7 +33,7 @@ module crystal
   integer, dimension(*), parameter :: &
     CF_NCLEAVAGESYSTEM = [3]                                                                        !< # of cleavage systems per family for cF
 
-  integer, parameter  :: &
+  integer, parameter :: &
     CF_NSLIP     = sum(CF_NSLIPSYSTEM), &                                                           !< total # of slip systems for cF
     CF_NTWIN     = sum(CF_NTWINSYSTEM), &                                                           !< total # of twin systems for cF
     CF_NTRANS    = sum(CF_NTRANSSYSTEM), &                                                          !< total # of transformation systems for cF
@@ -116,7 +116,7 @@ module crystal
   integer, dimension(*), parameter :: &
     CI_NCLEAVAGESYSTEM = [3]                                                                        !< # of cleavage systems per family for cI
 
-  integer, parameter  :: &
+  integer, parameter :: &
     CI_NSLIP     = sum(CI_NSLIPSYSTEM), &                                                           !< total # of slip systems for cI
     CI_NTWIN     = sum(CI_NTWINSYSTEM), &                                                           !< total # of twin systems for cI
     CI_NCLEAVAGE = sum(CI_NCLEAVAGESYSTEM)                                                          !< total # of cleavage systems for cI
@@ -213,9 +213,9 @@ module crystal
   integer, dimension(*), parameter :: &
     HP_NTWINSYSTEM = [6, 6, 6, 6]                                                                   !< # of twin systems per family for hP
 
-  integer, parameter  :: &
-    HP_NSLIP     = sum(HP_NSLIPSYSTEM), &                                                           !< total # of slip systems for hP
-    HP_NTWIN     = sum(HP_NTWINSYSTEM)                                                              !< total # of twin systems for hP
+  integer, parameter :: &
+    HP_NSLIP = sum(HP_NSLIPSYSTEM), &                                                               !< total # of slip systems for hP
+    HP_NTWIN = sum(HP_NTWINSYSTEM)                                                                  !< total # of twin systems for hP
 
   real(pREAL), dimension(4+4,HP_NSLIP), parameter :: &
     HP_SYSTEMSLIP = reshape(real([&
@@ -257,7 +257,7 @@ module crystal
       ],pREAL),shape(HP_SYSTEMSLIP))                                                                !< hP slip systems, sorted by P. Eisenlohr CCW around <c> starting next to a_1 axis
 
   real(pREAL), dimension(4+4,HP_NTWIN), parameter :: &
-    HP_SYSTEMTWIN =  reshape(real([&
+    HP_SYSTEMTWIN = reshape(real([&
     ! https://doi.org/10.1016/0079-6425(94)00007-7, Table 3 and Fig. 22
     ! -----------------------------------
     ! η_1                 K_1
@@ -393,7 +393,7 @@ module crystal
     crystal_isotropic_nu, &
     crystal_isotropic_mu, &
     crystal_symmetrize_33, &
-    crystal_symmetrize_C66, &
+    crystal_assembleStiffness, &
     crystal_SchmidMatrix_slip, &
     crystal_SchmidMatrix_twin, &
     crystal_SchmidMatrix_trans, &
@@ -472,7 +472,7 @@ function crystal_characteristicShear_Twin(Ntwin,lattice,CoverA) result(character
       end do myFamilies
 
     case default
-      call IO_error(137,ext_msg='crystal_characteristicShear_Twin: '//trim(lattice))
+      call IO_error(130_pI16, 'invalid lattice', lattice, emph=[2])
 
   end select
 
@@ -480,13 +480,13 @@ end function crystal_characteristicShear_Twin
 
 
 !--------------------------------------------------------------------------------------------------
-!> @brief Rotated elasticity matrices for twinning in 6x6-matrix notation
+!> @brief Rotated elasticity matrices for twinning in Mandel notation.
 !--------------------------------------------------------------------------------------------------
-function crystal_C66_twin(Ntwin,C66,lattice,CoverA)
+function crystal_C66_twin(Ntwin,C_tilde,lattice,CoverA)
 
   integer,     dimension(:),            intent(in) :: Ntwin                                         !< number of active twin systems per family
   character(len=*),                     intent(in) :: lattice                                       !< Bravais lattice (Pearson symbol)
-  real(pREAL), dimension(6,6),          intent(in) :: C66                                           !< unrotated parent stiffness matrix
+  real(pREAL), dimension(6,6),          intent(in) :: C_tilde                                       !< unrotated parent stiffness matrix in Mandel notation
   real(pREAL),                          intent(in) :: cOverA                                        !< c/a ratio
   real(pREAL), dimension(6,6,sum(Ntwin))           :: crystal_C66_twin
 
@@ -506,75 +506,77 @@ function crystal_C66_twin(Ntwin,C66,lattice,CoverA)
       coordinateSystem = buildCoordinateSystem(Ntwin,HP_NTWINSYSTEM,HP_SYSTEMTWIN,&
                                                lattice,cOverA)
     case default
-      call IO_error(137,ext_msg='crystal_C66_twin: '//trim(lattice))
+      call IO_error(130_pI16, 'invalid lattice', lattice, emph=[2])
   end select
 
   do i = 1, sum(Ntwin)
     call R%fromAxisAngle([coordinateSystem(1:3,2,i),PI])                                            ! mirror on habit (twin shear) plane
-    crystal_C66_twin(1:6,1:6,i) = R%rotStiffness(C66)
+    crystal_C66_twin(1:6,1:6,i) = R%rotate_Mandel(C_tilde)
   end do
 
 end function crystal_C66_twin
 
 
 !--------------------------------------------------------------------------------------------------
-!> @brief Rotated elasticity matrices for transformation in 6x6-matrix notation
+!> @brief Rotated elasticity matrices for transformation in Mandel notation.
 !--------------------------------------------------------------------------------------------------
-function crystal_C66_trans(Ntrans,C_parent66,lattice_target, &
-                           cOverA_trans,a_cF,a_cI)
+function crystal_C66_trans(Ntrans,C_parent_tilde,lattice_target, cOverA_trans,a_cF,a_cI)
 
   integer,     dimension(:),             intent(in) :: Ntrans                                       !< number of active twin systems per family
   character(len=*),                      intent(in) :: lattice_target                               !< Bravais lattice (Pearson symbol)
-  real(pREAL), dimension(6,6),           intent(in) :: C_parent66
+  real(pREAL), dimension(6,6),           intent(in) :: C_parent_tilde                               !< unrotated parent stiffness matrix in Mandel notation
   real(pREAL),                 optional, intent(in) :: cOverA_trans, a_cF, a_cI
   real(pREAL), dimension(6,6,sum(Ntrans))           :: crystal_C66_trans
 
-  real(pREAL), dimension(6,6)             :: C_bar66, C_target_unrotated66
+  real(pREAL), dimension(6,6)             :: C_target_tilde                                         !< unrotated target stiffness matrix in Mandel notation
   real(pREAL), dimension(3,3,sum(Ntrans)) :: Q,S
-  type(tRotation)                         :: R
-  integer                                 :: i
+  real(pREAL) :: C_bar_11, C_bar_12, C_bar_33, C_bar_13, C_bar_44, &                                !< average elastic constants in Voigt notation
+                 Delta_14                                                                           !< difference elastic constant in Voigt notation
+  type(tRotation) :: R
+  integer :: i
+
 
  !--------------------------------------------------------------------------------------------------
  ! elasticity matrix of the target phase in cube orientation
   if (lattice_target  == 'cI' .and. present(a_cF) .and. present(a_cI)) then
     if (a_cI <= 0.0_pREAL .or. a_cF <= 0.0_pREAL) &
       call IO_error(130_pI16,'negative lattice parameter a', min(a_cI,a_cF), emph=[2])
-    C_target_unrotated66 = C_parent66
+    C_target_tilde = C_parent_tilde
   elseif (lattice_target == 'hP' .and. present(cOverA_trans)) then
     ! https://doi.org/10.1063/1.1663858 eq. (16), eq. (18), eq. (19)
     ! https://doi.org/10.1016/j.actamat.2016.07.032 eq. (47), eq. (48)
+    ! adjusted to use Mandel notation for C_parent_tilde (factor 2 for C_44)
     if (cOverA_trans < 1.0_pREAL .or. cOverA_trans > 3.0_pREAL) &
       call IO_error(130_pI16,'c/a for hP target lattice not in range [1,3]', cOverA_trans, emph=[2])
-    C_bar66(1,1) = (C_parent66(1,1) + C_parent66(1,2) + 2.0_pREAL*C_parent66(4,4))/2.0_pREAL
-    C_bar66(1,2) = (C_parent66(1,1) + 5.0_pREAL*C_parent66(1,2) - 2.0_pREAL*C_parent66(4,4))/6.0_pREAL
-    C_bar66(3,3) = (C_parent66(1,1) + 2.0_pREAL*C_parent66(1,2) + 4.0_pREAL*C_parent66(4,4))/3.0_pREAL
-    C_bar66(1,3) = (C_parent66(1,1) + 2.0_pREAL*C_parent66(1,2) - 2.0_pREAL*C_parent66(4,4))/3.0_pREAL
-    C_bar66(4,4) = (C_parent66(1,1) - C_parent66(1,2) + C_parent66(4,4))/3.0_pREAL
-    C_bar66(1,4) = (C_parent66(1,1) - C_parent66(1,2) - 2.0_pREAL*C_parent66(4,4)) /(3.0_pREAL*sqrt(2.0_pREAL))
+    C_bar_11 = (C_parent_tilde(1,1) + C_parent_tilde(1,2) + C_parent_tilde(4,4))/2.0_pREAL
+    C_bar_12 = (C_parent_tilde(1,1) + 5.0_pREAL*C_parent_tilde(1,2) - C_parent_tilde(4,4))/6.0_pREAL
+    C_bar_33 = (C_parent_tilde(1,1) + 2.0_pREAL*C_parent_tilde(1,2) + 2.0_pREAL*C_parent_tilde(4,4))/3.0_pREAL
+    C_bar_13 = (C_parent_tilde(1,1) + 2.0_pREAL*C_parent_tilde(1,2) - C_parent_tilde(4,4))/3.0_pREAL
+    C_bar_44 = (C_parent_tilde(1,1) - C_parent_tilde(1,2) + C_parent_tilde(4,4)/2.0_pREAL)/3.0_pREAL
+    Delta_14 = (C_parent_tilde(1,1) - C_parent_tilde(1,2) - C_parent_tilde(4,4))/(3.0_pREAL*sqrt(2.0_pREAL))
 
-    C_target_unrotated66 = 0.0_pREAL
-    C_target_unrotated66(1,1) = C_bar66(1,1) - C_bar66(1,4)**2/C_bar66(4,4)
-    C_target_unrotated66(1,2) = C_bar66(1,2) + C_bar66(1,4)**2/C_bar66(4,4)
-    C_target_unrotated66(1,3) = C_bar66(1,3)
-    C_target_unrotated66(3,3) = C_bar66(3,3)
-    C_target_unrotated66(4,4) = C_bar66(4,4) - C_bar66(1,4)**2/(0.5_pREAL*(C_bar66(1,1) - C_bar66(1,2)))
-    C_target_unrotated66 = crystal_symmetrize_C66(C_target_unrotated66,'hP')
+    C_target_tilde = crystal_assembleStiffness(C_11 = C_bar_11 - Delta_14**2/C_bar_44, &
+                                               C_12 = C_bar_12 + Delta_14**2/C_bar_44, &
+                                               C_13 = C_bar_13, &
+                                               C_33 = C_bar_33, &
+                                               C_44 = C_bar_44 - Delta_14**2/(0.5_pREAL*(C_bar_11 - C_bar_12)), &
+                                               lattice='hP')
   elseif (all(lattice_target /= ['cI','hP'])) then
-    call IO_error(130_pI16,'invalid target lattice',lattice_target,emph=[2])
+    call IO_error(130_pI16, 'invalid target lattice', lattice_target, emph=[2])
   else
-    call IO_error(130_pI16,'lattice parameters for target lattice not given', lattice_target, emph=[2])
+    call IO_error(130_pI16, 'lattice parameters for target lattice not given', lattice_target, emph=[2])
   end if
 
   do i = 1,6
-    if (abs(C_target_unrotated66(i,i))<tol_math_check) &
-      call IO_error(130_pI16,'zero entry in elasticity matrix at', i, i, emph=[2,3])
+    if (abs(C_target_tilde(i,i))<tol_math_check) &
+      call IO_error(130_pI16, 'zero entry in elasticity matrix at', i, i, emph=[2,3])
   end do
 
   call buildTransformationSystem(Q,S,Ntrans,cOverA_trans,a_cF,a_cI)
 
   do i = 1,sum(Ntrans)
     call R%fromMatrix(Q(1:3,1:3,i))
-    crystal_C66_trans(1:6,1:6,i) = R%rotStiffness(C_target_unrotated66)
+    crystal_C66_trans(1:6,1:6,i) = R%rotate_Mandel(C_target_tilde)
   end do
 
  end function crystal_C66_trans
@@ -892,7 +894,7 @@ function crystal_interaction_SlipBySlip(Nslip,interactionValues,lattice) result(
       interactionTypes = TI_INTERACTIONSLIPSLIP
       NslipMax         = TI_NSLIPSYSTEM
     case default
-      call IO_error(137,ext_msg='crystal_interaction_SlipBySlip: '//trim(lattice))
+      call IO_error(130_pI16, 'invalid lattice', lattice, emph=[2])
   end select
 
   interactionMatrix = buildInteraction(Nslip,Nslip,NslipMax,NslipMax,interactionValues,interactionTypes)
@@ -980,6 +982,7 @@ function crystal_interaction_TwinByTwin(Ntwin,interactionValues,lattice) result(
       20,20,20,20,20,20,  19,19,19,19,19,19,  18,18,18,18,18,18,  17,17,17,17,17,16  &
       ],shape(HP_INTERACTIONTWINTWIN))                                                              !< Twin-twin interaction types for hP
 
+
   select case(lattice)
     case('cF')
       interactionTypes = CF_INTERACTIONTWINTWIN
@@ -991,7 +994,7 @@ function crystal_interaction_TwinByTwin(Ntwin,interactionValues,lattice) result(
       interactionTypes = HP_INTERACTIONTWINTWIN
       NtwinMax         = HP_NTWINSYSTEM
     case default
-      call IO_error(137,ext_msg='crystal_interaction_TwinByTwin: '//trim(lattice))
+      call IO_error(130_pI16, 'invalid lattice', lattice, emph=[2])
   end select
 
   interactionMatrix = buildInteraction(Ntwin,Ntwin,NtwinMax,NtwinMax,interactionValues,interactionTypes)
@@ -1029,11 +1032,12 @@ function crystal_interaction_TransByTrans(Ntrans,interactionValues,lattice) resu
       2,2,2,2,2,2,2,2,2,1,1,1  &
       ],shape(CF_INTERACTIONTRANSTRANS))                                                            !< Trans-trans interaction types for cF
 
+
   if (lattice == 'cF') then
     interactionTypes = CF_INTERACTIONTRANSTRANS
     NtransMax        = CF_NTRANSSYSTEM
   else
-    call IO_error(137,ext_msg='crystal_interaction_TransByTrans: '//trim(lattice))
+    call IO_error(130_pI16, 'invalid lattice', lattice, emph=[2])
   end if
 
   interactionMatrix = buildInteraction(Ntrans,Ntrans,NtransMax,NtransMax,interactionValues,interactionTypes)
@@ -1179,6 +1183,7 @@ function crystal_interaction_SlipByTwin(Nslip,Ntwin,interactionValues,lattice) r
       17,17,17,17,17,17,  18,18,18,18,18,18,  19,19,19,19,19,19,  20,20,20,20,20,20  &
       ],shape(HP_INTERACTIONSLIPTWIN))                                                              !< Slip-twin interaction types for hP
 
+
   select case(lattice)
     case('cF')
       interactionTypes = CF_INTERACTIONSLIPTWIN
@@ -1193,7 +1198,7 @@ function crystal_interaction_SlipByTwin(Nslip,Ntwin,interactionValues,lattice) r
       NslipMax         = HP_NSLIPSYSTEM
       NtwinMax         = HP_NTWINSYSTEM
     case default
-      call IO_error(137,ext_msg='crystal_interaction_SlipByTwin: '//trim(lattice))
+      call IO_error(130_pI16, 'invalid lattice', lattice, emph=[2])
   end select
 
   interactionMatrix = buildInteraction(Nslip,Ntwin,NslipMax,NtwinMax,interactionValues,interactionTypes)
@@ -1240,13 +1245,14 @@ function crystal_interaction_SlipByTrans(Nslip,Ntrans,interactionValues,lattice)
       4,4,4,4,4,4,4,4,4,4,4,4  &
       ],shape(CF_INTERACTIONSLIPTRANS))                                                             !< Slip-trans interaction types for cF
 
+
   select case(lattice)
     case('cF')
       interactionTypes = CF_INTERACTIONSLIPTRANS
       NslipMax         = CF_NSLIPSYSTEM
       NtransMax        = CF_NTRANSSYSTEM
     case default
-      call IO_error(137,ext_msg='crystal_interaction_SlipByTrans: '//trim(lattice))
+      call IO_error(130_pI16, 'invalid lattice', lattice, emph=[2])
   end select
 
   interactionMatrix = buildInteraction(Nslip,Ntrans,NslipMax,NtransMax,interactionValues,interactionTypes)
@@ -1322,7 +1328,7 @@ function crystal_interaction_TwinBySlip(Ntwin,Nslip,interactionValues,lattice) r
       NtwinMax         = HP_NTWINSYSTEM
       NslipMax         = HP_NSLIPSYSTEM
     case default
-      call IO_error(137,ext_msg='crystal_interaction_TwinBySlip: '//trim(lattice))
+      call IO_error(130_pI16, 'invalid lattice', lattice, emph=[2])
   end select
 
   interactionMatrix = buildInteraction(Ntwin,Nslip,NtwinMax,NslipMax,interactionValues,interactionTypes)
@@ -1373,20 +1379,20 @@ function crystal_SchmidMatrix_slip(Nslip,lattice,cOverA,nonSchmidCoefficients,se
       slipSystems = TI_SYSTEMSLIP
     case default
       allocate(NslipMax(0))
-      call IO_error(137,ext_msg='crystal_SchmidMatrix_slip: '//trim(lattice))
+      call IO_error(130_pI16, 'invalid lattice', lattice, emph=[2])
   end select
 
   if (present(nonSchmidCoefficients)) then
     select case(lattice)
       case('cI')
         if (size(nonSchmidCoefficients,dim=2) > 6) &
-          call IO_error(132,'too many non-Schmid coefficients for cI (max=6)')
+          call IO_error(130_pI16, 'more than 6 non-Schmid coefficients for lattice', 'cI', emph=[2])
       case('hP')
         if (size(nonSchmidCoefficients,dim=2) > 1) &
-          call IO_error(132,'too many non-Schmid coefficients for hP (max=1)')
+          call IO_error(130_pI16, 'more than 1 non-Schmid coefficient for lattice', 'hP', emph=[2])
       case default
         if (size(nonSchmidCoefficients,dim=2) > 0) &
-          call IO_error(132,'non-Schmid coefficients not implemented for '//lattice)
+          call IO_error(130_pI16, 'non-Schmid coefficient not implemented for lattice', lattice, emph=[2])
     end select
   endif
 
@@ -1466,6 +1472,7 @@ function crystal_SchmidMatrix_twin(Ntwin,lattice,cOverA) result(SchmidMatrix)
   integer,     dimension(:),             allocatable :: NtwinMax
   integer                                            :: i
 
+
   select case(lattice)
     case('cF')
       NtwinMax    = CF_NTWINSYSTEM
@@ -1478,7 +1485,7 @@ function crystal_SchmidMatrix_twin(Ntwin,lattice,cOverA) result(SchmidMatrix)
       twinSystems = HP_SYSTEMTWIN
     case default
       allocate(NtwinMax(0))
-      call IO_error(137,ext_msg='crystal_SchmidMatrix_twin: '//trim(lattice))
+      call IO_error(130_pI16, 'invalid lattice', lattice, emph=[2])
   end select
 
   if (any(NtwinMax(1:size(Ntwin)) - Ntwin < 0)) &
@@ -1555,7 +1562,7 @@ function crystal_SchmidMatrix_cleavage(Ncleavage,lattice,cOverA) result(SchmidMa
       cleavageSystems = CI_SYSTEMCLEAVAGE
     case default
       allocate(NcleavageMax(0))
-      call IO_error(137,ext_msg='crystal_SchmidMatrix_cleavage: '//trim(lattice))
+      call IO_error(130_pI16, 'invalid lattice', lattice, emph=[2])
   end select
 
   if (any(NcleavageMax(1:size(Ncleavage)) - Ncleavage < 0)) &
@@ -1656,7 +1663,7 @@ function crystal_labels_slip(Nslip,lattice) result(labels)
       NslipMax    = TI_NSLIPSYSTEM
       slipSystems = TI_SYSTEMSLIP
     case default
-      call IO_error(137,ext_msg='crystal_labels_slip: '//trim(lattice))
+      call IO_error(130_pI16, 'invalid lattice', lattice, emph=[2])
   end select
 
   if (any(NslipMax(1:size(Nslip)) - Nslip < 0)) &
@@ -1697,49 +1704,59 @@ end function crystal_symmetrize_33
 
 
 !--------------------------------------------------------------------------------------------------
-!> @brief Return stiffness matrix in 6x6 notation with symmetry according to given Bravais lattice
-!> @details J. A. Rayne and B. S. Chandrasekhar Phys. Rev. 120, 1658 Erratum Phys. Rev. 122, 1962
+!> @brief Assemble unrotated stiffness matrix in Mandel notation.
+!> @details J.F. Nye, Physical Properties of Crystals, 1985. Table 9, page 140
+!>          https://doi.org/10.1016/j.euromechsol.2021.104357
 !--------------------------------------------------------------------------------------------------
-pure function crystal_symmetrize_C66(C66,lattice) result(C66_sym)
+pure function crystal_assembleStiffness(C_11,C_12,C_44, &
+                                        C_13,C_33, &
+                                        C_66, &
+                                        lattice) result(C_tilde)
 
-  real(pREAL), dimension(6,6) :: C66_sym
+  real(pREAL), dimension(6,6) :: C_tilde
 
-  real(pREAL), dimension(6,6), intent(in) :: C66
-  character(len=*),            intent(in) :: lattice                                                !< Bravais lattice (Pearson symbol)
+  real(pREAL),      intent(in) :: C_11, C_12, C_44                                                  !< elastic constants in Voigt notation
+  real(pREAL),      intent(in), optional :: C_13, C_33, C_66                                        !< elastic constants in Voigt notation
+  character(len=*), intent(in) :: lattice                                                           !< Bravais lattice (Pearson symbol)
 
   integer :: i,j
 
 
-  C66_sym = 0.0_pREAL
+  C_tilde = 0.0_pREAL
+
+  C_tilde(1,1) = C_11
+  C_tilde(2,2) = C_11
+
+  C_tilde(1,2) = C_12
+
+  C_tilde(4,4) = C_44*WGT_MANDEL(2)
+  C_tilde(5,5) = C_44*WGT_MANDEL(2)
 
   select case(lattice)
     case ('cF','cI')
-      C66_sym(1,1) = C66(1,1); C66_sym(2,2) = C66(1,1); C66_sym(3,3) = C66(1,1)
-      C66_sym(1,2) = C66(1,2); C66_sym(1,3) = C66(1,2); C66_sym(2,3) = C66(1,2)
-      C66_sym(4,4) = C66(4,4); C66_sym(5,5) = C66(4,4); C66_sym(6,6) = C66(4,4)                     ! isotropic C_44 = (C_11-C_12)/2
+      C_tilde(3,3) = C_11
+      C_tilde(1,3) = C_12
+      C_tilde(2,3) = C_12
+      C_tilde(6,6) = C_44*WGT_MANDEL(2)
     case ('hP')
-      C66_sym(1,1) = C66(1,1); C66_sym(2,2) = C66(1,1)
-      C66_sym(3,3) = C66(3,3)
-      C66_sym(1,2) = C66(1,2)
-      C66_sym(1,3) = C66(1,3); C66_sym(2,3) = C66(1,3)
-      C66_sym(4,4) = C66(4,4); C66_sym(5,5) = C66(4,4)
-      C66_sym(6,6) = 0.5_pREAL*(C66(1,1)-C66(1,2))
+      C_tilde(3,3) = C_33
+      C_tilde(1,3) = C_13
+      C_tilde(2,3) = C_13
+      C_tilde(6,6) = 0.5_pREAL * (C_11 - C_12)*WGT_MANDEL(2)
     case ('tI')
-      C66_sym(1,1) = C66(1,1); C66_sym(2,2) = C66(1,1)
-      C66_sym(3,3) = C66(3,3)
-      C66_sym(1,2) = C66(1,2)
-      C66_sym(1,3) = C66(1,3); C66_sym(2,3) = C66(1,3)
-      C66_sym(4,4) = C66(4,4); C66_sym(5,5) = C66(4,4)
-      C66_sym(6,6) = C66(6,6)
+      C_tilde(3,3) = C_33
+      C_tilde(1,3) = C_13
+      C_tilde(2,3) = C_13
+      C_tilde(6,6) = C_66*WGT_MANDEL(2)
    end select
 
-   do i = 1, 6
-     do j = i+1, 6
-       C66_sym(j,i) = C66_sym(i,j)
+   do i = 1, 3
+     do j = i+1, 3
+       C_tilde(j,i) = C_tilde(i,j)
      end do
    end do
 
-end function crystal_symmetrize_C66
+end function crystal_assembleStiffness
 
 
 !--------------------------------------------------------------------------------------------------
@@ -1767,7 +1784,7 @@ function crystal_labels_twin(Ntwin,lattice) result(labels)
       NtwinMax    = HP_NTWINSYSTEM
       twinSystems = HP_SYSTEMTWIN
     case default
-      call IO_error(137,ext_msg='crystal_labels_twin: '//trim(lattice))
+      call IO_error(130_pI16, 'invalid lattice', lattice, emph=[2])
   end select
 
   if (any(NtwinMax(1:size(Ntwin)) - Ntwin < 0)) &
@@ -1857,7 +1874,7 @@ function coordinateSystem_slip(Nslip,lattice,cOverA) result(coordinateSystem)
       slipSystems = TI_SYSTEMSLIP
     case default
       allocate(NslipMax(0))
-      call IO_error(137,ext_msg='coordinateSystem_slip: '//trim(lattice))
+      call IO_error(130_pI16, 'invalid lattice', lattice, emph=[2])
   end select
 
   if (any(NslipMax(1:size(Nslip)) - Nslip < 0)) &
@@ -1969,7 +1986,7 @@ function buildCoordinateSystem(active,potential,system,lattice,cOverA) result(co
                         system(8,p)/cOverA ]                                                        ! plane (hkil)->(h (h+2k)/sqrt(3) l/(p/a))
 
         case default
-          call IO_error(137,ext_msg='buildCoordinateSystem: '//trim(lattice))
+          call IO_error(130_pI16, 'invalid lattice', lattice, emph=[2])
 
       end select
 
@@ -2104,7 +2121,7 @@ subroutine buildTransformationSystem(Q,S,Ntrans,cOverA,a_cF,a_cI)
       S(1:3,1:3,i) = matmul(Q(1:3,1:3,i), matmul(matmul(sd,ss), transpose(Q(1:3,1:3,i)))) - MATH_I3 ! ToDo: This is of interest for the Schmid matrix only
     end do
   else
-    call IO_error(132,ext_msg='buildTransformationSystem')
+    error stop 'invalid call to buildTransformationSystem'
   end if
 
 end subroutine buildTransformationSystem
@@ -2121,8 +2138,8 @@ function getlabels(active,potential,system) result(labels)
   real(pREAL),      dimension(:,:), intent(in) :: &
     system
 
-  character(len=:), dimension(:), allocatable :: labels
-  character(len=:),               allocatable :: label
+  character(len=2*size(system,1) + (size(system,1) - 2) + 4) :: label                               ! 2 letters per index + spaces + brackets
+  character(len=2*size(system,1) + (size(system,1) - 2) + 4), dimension(sum(active)) :: labels
 
   integer :: i,j
   integer :: &
@@ -2131,8 +2148,6 @@ function getlabels(active,potential,system) result(labels)
     f, &                                                                                            !< index of my family
     s                                                                                               !< index of my system in current family
 
-  i = 2*size(system,1) + (size(system,1) - 2) + 4                                                   ! 2 letters per index + spaces + brackets
-  allocate(character(len=i) :: labels(sum(active)), label)
 
   a = 0
   activeFamilies: do f = 1,size(active,1)
@@ -2170,34 +2185,34 @@ end function getlabels
 !> @brief Equivalent Poisson's ratio (ν).
 !> @details https://doi.org/10.1088/0370-1298/65/5/307
 !--------------------------------------------------------------------------------------------------
-pure function crystal_isotropic_nu(C,assumption,lattice) result(nu)
+pure function crystal_isotropic_nu(C_tilde,assumption,lattice) result(nu)
 
-  real(pREAL), dimension(6,6), intent(in) :: C                                                      !< Stiffness tensor (Voigt notation)
+  real(pREAL), dimension(6,6), intent(in) :: C_tilde                                                !< Stiffness matrix in Mandel notation
   character(len=*),            intent(in) :: assumption                                             !< Assumption (isostrain = 'Voigt', isostress = 'Reuss')
   character(len=*), optional,  intent(in) :: lattice
   real(pREAL) :: nu
 
   real(pREAL) :: K, mu
   logical                       :: error
-  real(pREAL), dimension(6,6)   :: S
+  real(pREAL), dimension(6,6)   :: S_tilde
 
 
   select case(misc_optional(lattice,''))
     case('cF','cI')
-      K = (C(1,1) + C(1,2)*2.0_pREAL)/3.0_pREAL                                                     ! eq (9a)
+      K = (C_tilde(1,1) + C_tilde(1,2)*2.0_pREAL)/3.0_pREAL                                         ! eq (9a)
     case default
       if     (assumption == 'isostrain') then
-        K = sum(C(1:3,1:3)) / 9.0_pREAL                                                             ! eq (6a)
+        K = sum(C_tilde(1:3,1:3)) / 9.0_pREAL                                                       ! eq (6a)
       elseif (assumption == 'isostress') then
-        call math_invert(S,error,C)
+        call math_invert(S_tilde,error,C_tilde)
         if (error) error stop 'matrix inversion failed'
-        K = 1.0_pREAL / sum(S(1:3,1:3))                                                             ! eq (7a)
+        K = 1.0_pREAL / sum(S_tilde(1:3,1:3))                                                       ! eq (7a)
      else
        error stop 'invalid assumption'
      end if
   end select
 
-  mu = crystal_isotropic_mu(C,assumption,lattice)
+  mu = crystal_isotropic_mu(C_tilde,assumption,lattice)
   nu = (1.5_pREAL*K-mu)/(3.0_pREAL*K+mu)
 
 end function crystal_isotropic_nu
@@ -2207,25 +2222,25 @@ end function crystal_isotropic_nu
 !> @brief Equivalent shear modulus (μ).
 !> @details https://doi.org/10.1088/0370-1298/65/5/307
 !--------------------------------------------------------------------------------------------------
-pure function crystal_isotropic_mu(C,assumption,lattice) result(mu)
+pure function crystal_isotropic_mu(C_tilde,assumption,lattice) result(mu)
 
-  real(pREAL), dimension(6,6), intent(in) :: C                                                      !< Stiffness tensor (Voigt notation)
+  real(pREAL), dimension(6,6), intent(in) :: C_tilde                                                !< Stiffness matrix in Mandel notation
   character(len=*),            intent(in) :: assumption                                             !< Assumption (isostrain = 'Voigt', isostress = 'Reuss')
   character(len=*), optional,  intent(in) :: lattice
   real(pREAL) :: mu
 
   logical                       :: error
-  real(pREAL), dimension(6,6)   :: S
+  real(pREAL), dimension(6,6)   :: S_tilde
 
 
   if     (assumption == 'isostrain') then
     select case(misc_optional(lattice,''))
       case('cF','cI')
-        mu = ( C(1,1) - C(1,2) + C(4,4)*3.0_pREAL) / 5.0_pREAL                                      ! eq (9b)
+        mu = ( C_tilde(1,1) - C_tilde(1,2) + C_tilde(4,4)*3.0_pREAL/WGT_MANDEL(2)) / 5.0_pREAL      ! eq (9b)
       case default
-        mu = (  C(1,1)+C(2,2)+C(3,3) &
-              - C(1,2)-C(2,3)-C(1,3) &
-              +(C(4,4)+C(5,5)+C(6,6)) * 3.0_pREAL &
+        mu = (  C_tilde(1,1)+C_tilde(2,2)+C_tilde(3,3) &
+              - C_tilde(1,2)-C_tilde(2,3)-C_tilde(1,3) &
+              +(C_tilde(4,4)+C_tilde(5,5)+C_tilde(6,6)) * 3.0_pREAL/WGT_MANDEL(2) &
              ) / 15.0_pREAL                                                                         ! eq (6b)
     end select
 
@@ -2233,12 +2248,13 @@ pure function crystal_isotropic_mu(C,assumption,lattice) result(mu)
     select case(misc_optional(lattice,''))
       case('cF','cI')
         mu = 5.0_pREAL &
-           / (4.0_pREAL/(C(1,1)-C(1,2)) + 3.0_pREAL/C(4,4))                                         ! eq (9c), (8a), (8c)
+           / (4.0_pREAL/(C_tilde(1,1)-C_tilde(1,2)) + 3.0_pREAL*WGT_MANDEL(2)/C_tilde(4,4))         ! eq (9c), (8a), (8c)
       case default
-        call math_invert(S,error,C)
+        call math_invert(S_tilde,error,C_tilde)
         if (error) error stop 'matrix inversion failed'
         mu = 15.0_pREAL &
-           / (4.0_pREAL*(S(1,1)+S(2,2)+S(3,3)-S(1,2)-S(2,3)-S(1,3)) + 3.0_pREAL*(S(4,4)+S(5,5)+S(6,6))) ! eq (7b)
+           / ( 4.0_pREAL*(S_tilde(1,1)+S_tilde(2,2)+S_tilde(3,3)-S_tilde(1,2)-S_tilde(2,3)-S_tilde(1,3)) \
+              +3.0_pREAL*WGT_MANDEL(2)*(S_tilde(4,4)+S_tilde(5,5)+S_tilde(6,6)))                    ! eq (7b)
     end select
   else
     error stop 'invalid assumption'
@@ -2276,27 +2292,27 @@ subroutine crystal_selfTest()
                                                            error stop 'tI coordinate system'
   do i = 1, 10
     call random_number(C)
-    C_cF = crystal_symmetrize_C66(C,'cI')
-    C_cI = crystal_symmetrize_C66(C,'cF')
-    C_hP = crystal_symmetrize_C66(C,'hP')
-    C_tI = crystal_symmetrize_C66(C,'tI')
+    C_cF = crystal_assembleStiffness(C(1,1),C(1,2),C(4,4),lattice='cI')
+    C_cI = crystal_assembleStiffness(C(1,1),C(1,2),C(4,4),lattice='cF')
+    C_hP = crystal_assembleStiffness(C(1,1),C(1,2),C(4,4),C(1,3),C(3,3),lattice='hP')
+    C_tI = crystal_assembleStiffness(C(1,1),C(1,2),C(4,4),C(1,3),C(3,3),C(6,6),lattice='tI')
 
     if (any(dNeq(C_cI,transpose(C_cF))))                   error stop 'SymmetryC66/cI-cF'
     if (any(dNeq(C_cF,transpose(C_cI))))                   error stop 'SymmetryC66/cF-cI'
     if (any(dNeq(C_hP,transpose(C_hP))))                   error stop 'SymmetryC66/hP'
     if (any(dNeq(C_tI,transpose(C_tI))))                   error stop 'SymmetryC66/tI'
 
-    if (any(dNeq(C(1,1),[C_cF(1,1),C_cF(2,2),C_cF(3,3)]))) error stop 'SymmetryC_11-22-33/c'
-    if (any(dNeq(C(1,2),[C_cF(1,2),C_cF(1,3),C_cF(2,3)]))) error stop 'SymmetryC_12-13-23/c'
-    if (any(dNeq(C(4,4),[C_cF(4,4),C_cF(5,5),C_cF(6,6)]))) error stop 'SymmetryC_44-55-66/c'
+    if (any(dNeq(C(1,1),[C_cF(1,1),C_cF(2,2),C_cF(3,3)])))               error stop 'SymmetryC_11-22-33/c'
+    if (any(dNeq(C(1,2),[C_cF(1,2),C_cF(1,3),C_cF(2,3)])))               error stop 'SymmetryC_12-13-23/c'
+    if (any(dNeq(C(4,4)*WGT_MANDEL(2),[C_cF(4,4),C_cF(5,5),C_cF(6,6)]))) error stop 'SymmetryC_44-55-66/c'
 
-    if (any(dNeq(C(1,1),[C_hP(1,1),C_hP(2,2)])))           error stop 'SymmetryC_11-22/hP'
-    if (any(dNeq(C(1,3),[C_hP(1,3),C_hP(2,3)])))           error stop 'SymmetryC_13-23/hP'
-    if (any(dNeq(C(4,4),[C_hP(4,4),C_hP(5,5)])))           error stop 'SymmetryC_44-55/hP'
+    if (any(dNeq(C(1,1),[C_hP(1,1),C_hP(2,2)])))                         error stop 'SymmetryC_11-22/hP'
+    if (any(dNeq(C(1,3),[C_hP(1,3),C_hP(2,3)])))                         error stop 'SymmetryC_13-23/hP'
+    if (any(dNeq(C(4,4)*WGT_MANDEL(2),[C_hP(4,4),C_hP(5,5)])))           error stop 'SymmetryC_44-55/hP'
 
-    if (any(dNeq(C(1,1),[C_tI(1,1),C_tI(2,2)])))           error stop 'SymmetryC_11-22/tI'
-    if (any(dNeq(C(1,3),[C_tI(1,3),C_tI(2,3)])))           error stop 'SymmetryC_13-23/tI'
-    if (any(dNeq(C(4,4),[C_tI(4,4),C_tI(5,5)])))           error stop 'SymmetryC_44-55/tI'
+    if (any(dNeq(C(1,1),[C_tI(1,1),C_tI(2,2)])))                         error stop 'SymmetryC_11-22/tI'
+    if (any(dNeq(C(1,3),[C_tI(1,3),C_tI(2,3)])))                         error stop 'SymmetryC_13-23/tI'
+    if (any(dNeq(C(4,4)*WGT_MANDEL(2),[C_tI(4,4),C_tI(5,5)])))           error stop 'SymmetryC_44-55/tI'
 
     call random_number(T)
     T_cF = crystal_symmetrize_33(T,'cI')
@@ -2316,14 +2332,11 @@ subroutine crystal_selfTest()
 
   call random_number(C)
   C(1,1) = C(1,1) + C(1,2) + 0.1_pREAL
-  C(1,3) = C(1,2)
-  C(3,3) = C(1,1)
   C(4,4) = 0.5_pREAL * (C(1,1) - C(1,2))
-  C(6,6) = C(4,4)
 
-  C_cI = crystal_symmetrize_C66(C,'cI')
-  if (dNeq(C_cI(4,4),crystal_isotropic_mu(C_cI,'isostrain','cI'),1.0e-12_pREAL)) error stop 'isotropic_mu/isostrain/cI'
-  if (dNeq(C_cI(4,4),crystal_isotropic_mu(C_cI,'isostress','cI'),1.0e-12_pREAL)) error stop 'isotropic_mu/isostress/cI'
+  C_cI = crystal_assembleStiffness(C(1,1),C(1,2),C(4,4),lattice='cI')
+  if (dNeq(C(4,4),crystal_isotropic_mu(C_cI,'isostrain','cI'),1.0e-12_pREAL)) error stop 'isotropic_mu/isostrain/cI'
+  if (dNeq(C(4,4),crystal_isotropic_mu(C_cI,'isostress','cI'),1.0e-12_pREAL)) error stop 'isotropic_mu/isostress/cI'
 
   lambda = C_cI(1,2)
   if (dNeq(lambda*0.5_pREAL/(lambda+crystal_isotropic_mu(C_cI,'isostrain','cI')), &
@@ -2332,7 +2345,7 @@ subroutine crystal_selfTest()
           crystal_isotropic_nu(C_cI,'isostress','cI'),1.0e-12_pREAL)) error stop 'isotropic_nu/isostress/cI'
 
 
-  C_hP = crystal_symmetrize_C66(C,'hP')
+  C_hP = crystal_assembleStiffness(C(1,1),C(1,2),C(4,4),C(1,2),C(1,1),lattice='hP')
   if (dNeq(C(4,4),crystal_isotropic_mu(C_hP,'isostrain','hP'),1.0e-12_pREAL)) error stop 'isotropic_mu/isostrain/hP'
   if (dNeq(C(4,4),crystal_isotropic_mu(C_hP,'isostress','hP'),1.0e-12_pREAL)) error stop 'isotropic_mu/isostress/hP'
 
@@ -2342,9 +2355,9 @@ subroutine crystal_selfTest()
   if (dNeq(lambda*0.5_pREAL/(lambda+crystal_isotropic_mu(C_hP,'isostress','hP')), &
           crystal_isotropic_nu(C_hP,'isostress','hP'),1.0e-12_pREAL)) error stop 'isotropic_nu/isostress/hP'
 
-  C_tI = crystal_symmetrize_C66(C,'tI')
-  if (dNeq(C(6,6),crystal_isotropic_mu(C_tI,'isostrain','tI'),1.0e-12_pREAL)) error stop 'isotropic_mu/isostrain/tI'
-  if (dNeq(C(6,6),crystal_isotropic_mu(C_tI,'isostress','tI'),1.0e-12_pREAL)) error stop 'isotropic_mu/isostress/tI'
+  C_tI = crystal_assembleStiffness(C(1,1),C(1,2),C(4,4),C(1,2),C(1,1),C(4,4),lattice='tI')
+  if (dNeq(C(4,4),crystal_isotropic_mu(C_tI,'isostrain','tI'),1.0e-12_pREAL)) error stop 'isotropic_mu/isostrain/tI'
+  if (dNeq(C(4,4),crystal_isotropic_mu(C_tI,'isostress','tI'),1.0e-12_pREAL)) error stop 'isotropic_mu/isostress/tI'
 
   lambda = C_tI(1,2)
   if (dNeq(lambda*0.5_pREAL/(lambda+crystal_isotropic_mu(C_tI,'isostrain','tI')), &
@@ -2353,7 +2366,8 @@ subroutine crystal_selfTest()
           crystal_isotropic_nu(C_tI,'isostress','tI'),1.0e-12_pREAL)) error stop 'isotropic_nu/isostress/tI'
 
   call random_number(C)
-  C = crystal_symmetrize_C66(C+math_eye(6),'cI')
+  C = C + math_eye(6)
+  C = crystal_assembleStiffness(C(1,1),C(1,2),C(4,4),lattice='cI')
   if (dNeq(crystal_isotropic_mu(C,'isostrain','cI'), crystal_isotropic_mu(C,'isostrain','hP'), 1.0e-12_pREAL)) &
     error stop 'isotropic_mu/isostrain/cI-hP'
   if (dNeq(crystal_isotropic_nu(C,'isostrain','cF'), crystal_isotropic_nu(C,'isostrain','cI'), 1.0e-12_pREAL)) &

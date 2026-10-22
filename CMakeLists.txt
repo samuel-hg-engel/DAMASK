@@ -1,9 +1,12 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
-cmake_minimum_required(VERSION 3.18.0)
+cmake_minimum_required(VERSION 3.28.0)
+
 set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_C_STANDARD 17)
+
 include(FindPkgConfig REQUIRED)
 include(CheckCXXSymbolExists REQUIRED)
+include(CheckSourceCompiles REQUIRED)
 
 if(DEFINED ENV{PETSC_DIR})
   message("PETSC_DIR:\n$ENV{PETSC_DIR}\n")
@@ -14,8 +17,8 @@ endif()
 # Dummy project to determine compiler names and version
 project(Prerequisites LANGUAGES)
 set(ENV{PKG_CONFIG_PATH} "$ENV{PETSC_DIR}/$ENV{PETSC_ARCH}/lib/pkgconfig:$ENV{PKG_CONFIG_PATH}")
-set(PETSC_VERSION_MINOR_MIN "19")
-set(PETSC_VERSION_MINOR_MAX "24")
+set(PETSC_VERSION_MINOR_MIN "22")
+set(PETSC_VERSION_MINOR_MAX "26")
 
 pkg_check_modules(PETSC_MIN REQUIRED PETSc>=3.${PETSC_VERSION_MINOR_MIN}.0 QUIET) #CMake does not support version range
 pkg_check_modules(PETSC REQUIRED PETSc<=3.${PETSC_VERSION_MINOR_MAX}.99)
@@ -26,12 +29,14 @@ pkg_get_variable(CMAKE_CXX_COMPILER PETSc cxxcompiler)
 
 # Get version
 file(STRINGS ${PROJECT_SOURCE_DIR}/VERSION DAMASK_VERSION_STRING)
-string(REPLACE "-" ";" DAMASK_VERSION_LIST "${DAMASK_VERSION_STRING}")
+string(REPLACE "+" ";" DAMASK_VERSION_LIST "${DAMASK_VERSION_STRING}")
 list(LENGTH DAMASK_VERSION_LIST CHUNKS)
-if(CHUNKS GREATER 2)
+if(CHUNKS GREATER 1)
   list(GET DAMASK_VERSION_LIST 0 DAMASK_VERSION_MAIN)
-  list(GET DAMASK_VERSION_LIST 1 DAMASK_VERSION_TWEAK)
-  list(GET DAMASK_VERSION_LIST 2 PROJECT_VERSION_HASH)
+  list(GET DAMASK_VERSION_LIST 1 DAMASK_VERSION_BUILD)
+  string(REPLACE "." ";" DAMASK_VERSION_BUILD_LIST "${DAMASK_VERSION_BUILD}")
+  list(GET DAMASK_VERSION_BUILD_LIST 0 DAMASK_VERSION_TWEAK)
+  list(GET DAMASK_VERSION_BUILD_LIST 1 DAMASK_VERSION_HASH)
   set(DAMASK_VERSION_CMAKE "${DAMASK_VERSION_MAIN}.${DAMASK_VERSION_TWEAK}")
 else()
   set(DAMASK_VERSION_CMAKE "${DAMASK_VERSION_STRING}")
@@ -64,22 +69,34 @@ endif()
 message("\nBuilding ${CMAKE_PROJECT_NAME} ${DAMASK_VERSION_STRING}\n")
 
 add_compile_definitions(PETSC)
-add_compile_definitions(PETSC_MINOR_MAX=${PETSC_VERSION_MINOR_MAX})
-add_compile_definitions(PETSC_MINOR_MIN=${PETSC_VERSION_MINOR_MIN})
-add_compile_definitions(DAMASK_VERSION="${DAMASK_VERSION_STRING}")
-add_compile_definitions(DAMASK_VERSION_MAJOR="${PROJECT_VERSION_MAJOR}")
-add_compile_definitions(DAMASK_VERSION_MINOR="${PROJECT_VERSION_MINOR}")
-add_compile_definitions(DAMASK_VERSION_PATCH="${PROJECT_VERSION_PATCH}")
-if(DEFINED PROJECT_VERSION_HASH)
-  add_compile_definitions(DAMASK_VERSION_HASH="${PROJECT_VERSION_HASH}")
+add_compile_definitions(
+  PETSC_MINOR_MAX=${PETSC_VERSION_MINOR_MAX}
+  PETSC_MINOR_MIN=${PETSC_VERSION_MINOR_MIN}
+)
+add_compile_definitions(
+  DAMASK_VERSION="${DAMASK_VERSION_STRING}"
+  DAMASK_VERSION_MAJOR="${DAMASK_VERSION_MAJOR}"
+  DAMASK_VERSION_MINOR="${DAMASK_VERSION_MINOR}"
+  DAMASK_VERSION_PATCH="${DAMASK_VERSION_PATCH}"
+)
+if(DAMASK_VERSION_TWEAK)
+  add_compile_definitions(DAMASK_VERSION_TWEAK="${DAMASK_VERSION_TWEAK}")
+endif()
+if(DEFINED DAMASK_VERSION_HASH)
+  add_compile_definitions(DAMASK_VERSION_HASH="${DAMASK_VERSION_HASH}")
 endif()
 
 add_compile_definitions(CMAKE_SYSTEM_NAME="${CMAKE_SYSTEM_NAME}")
 add_compile_definitions(CMAKE_SYSTEM_PROCESSOR="${CMAKE_SYSTEM_PROCESSOR}")
+add_compile_definitions(
+  DAMASK_FORTRAN_COMPILER_ID="${CMAKE_Fortran_COMPILER_ID}"
+  DAMASK_FORTRAN_COMPILER_VERSION="${CMAKE_Fortran_COMPILER_VERSION}"
+  DAMASK_C_COMPILER_ID="${CMAKE_C_COMPILER_ID}"
+  DAMASK_C_COMPILER_VERSION="${CMAKE_C_COMPILER_VERSION}"
+  DAMASK_CXX_COMPILER_ID="${CMAKE_CXX_COMPILER_ID}"
+  DAMASK_CXX_COMPILER_VERSION="${CMAKE_CXX_COMPILER_VERSION}"
+)
 
-if(PETSC_VERSION VERSION_EQUAL 3.17.0)
-  add_compile_definitions("CHKERRQ=PetscCall")
-endif()
 if(PETSC_VERSION VERSION_LESS 3.23.0)
   add_compile_definitions(
     $<$<COMPILE_LANGUAGE:Fortran>:VecGetArray=VecGetArrayF90>
@@ -206,12 +223,92 @@ message("C Compiler Flags:\n${CMAKE_C_FLAGS_${CMAKE_BUILD_TYPE}}\n")
 message("C++ Compiler Flags:\n${CMAKE_CXX_FLAGS_${CMAKE_BUILD_TYPE}}\n")
 message("Fortran Linker Command:\n${CMAKE_Fortran_LINK_EXECUTABLE}\n")
 
+# check MPI features
+block()
+  string(REPLACE " " ";" CMAKE_REQUIRED_INCLUDES "${PETSC_INCLUDES}")
+  string(REPLACE "-I" "" CMAKE_REQUIRED_INCLUDES "${CMAKE_REQUIRED_INCLUDES}")
+  message("${CMAKE_REQUIRED_INCLUDES}")
+
+  set(CMAKE_TRY_COMPILE_TARGET_TYPE "STATIC_LIBRARY")
+
+  check_source_compiles(Fortran
+ "#include <petsc/finclude/petscsys.h>
+  module m
+  use PETScSys
+  implicit none
+  contains
+  subroutine s()
+  integer :: i
+  i = PETSC_COMM_WORLD%MPI_val
+  end subroutine s
+  end module m"
+  PETSC_USES_MPIF08)
+
+  check_source_compiles(Fortran
+ "#include <petsc/finclude/petscsys.h>
+  module m
+  use PETScSys
+  implicit none
+  contains
+  subroutine s()
+  integer :: i
+  i = MPI_COMM_WORLD%MPI_val
+  end subroutine s
+  end module m"
+  PETSC_EXPOSES_MPIF08)
+
+  check_source_compiles(Fortran
+ "#include <petsc/finclude/petscsys.h>
+  module m
+  use PETScSys
+  implicit none
+  contains
+  subroutine s()
+  integer :: i
+  i = MPI_COMM_WORLD
+  end subroutine s
+  end module m"
+  PETSC_EXPOSES_MPIF90)
+
+  check_source_compiles(Fortran
+ "module m
+  use HDF5
+  use MPI_f08
+  implicit none
+  contains
+  subroutine s()
+  integer :: hdferr
+  integer(HID_T) :: plist_access_id
+  call H5Pset_fapl_mpio_f(plist_access_id, MPI_COMM_WORLD, MPI_INFO_NULL, hdferr)
+  end subroutine s
+  end module m"
+  HDF5_SUPPORTS_MPIF08)
+endblock()
+
+if(PETSC_USES_MPIF08)
+  add_compile_definitions($<$<COMPILE_LANGUAGE:Fortran>:PETSC_USES_MPIF08>)
+endif()
+
+if(PETSC_EXPOSES_MPIF08)
+  add_compile_definitions($<$<COMPILE_LANGUAGE:Fortran>:PETSC_EXPOSES_MPI>)
+  add_compile_definitions($<$<COMPILE_LANGUAGE:Fortran>:PETSC_EXPOSES_MPIF08>)
+endif()
+
+if(PETSC_EXPOSES_MPIF90)
+  add_compile_definitions($<$<COMPILE_LANGUAGE:Fortran>:PETSC_EXPOSES_MPI>)
+  add_compile_definitions($<$<COMPILE_LANGUAGE:Fortran>:PETSC_EXPOSES_MPIF90>)
+endif()
+
+if(HDF5_SUPPORTS_MPIF08)
+  add_compile_definitions($<$<COMPILE_LANGUAGE:Fortran>:HDF5_SUPPORTS_MPIF08>)
+endif()
+
 # location of code
 add_subdirectory(src)
 
 if(TEST)
   include(CTest)
-  add_test(NAME fortran.unit COMMAND $<TARGET_FILE:DAMASK_test>)
+  add_test(NAME fortran.unit COMMAND $<TARGET_FILE:damask_test>)
   set_tests_properties(fortran.unit PROPERTIES WORKING_DIRECTORY ${PROJECT_SOURCE_DIR})
   add_subdirectory(tests/unit_cpp)
 endif()

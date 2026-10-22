@@ -1,28 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
-function(fs_case_sensitive base_path out_var)
-  set(_test_dir "${base_path}/neveruse")
-  file(MAKE_DIRECTORY "${_test_dir}")
-  file(WRITE "${_test_dir}/never.use" "test\n")
-  file(WRITE "${_test_dir}/NEVER.USE" "test\n")
-
-  # Count distinct directory entries
-  file(GLOB _case_test_files "${_test_dir}/*")
-  list(LENGTH _case_test_files _case_test_count)
-
-  # If both names coexist as separate entries -> case-sensitive
-  set(_is_case_sensitive FALSE)
-  if(_case_test_count GREATER 1)
-    set(_is_case_sensitive TRUE)
-  endif()
-
-  file(REMOVE_RECURSE "${_test_dir}")
-  set(${out_var} ${_is_case_sensitive} PARENT_SCOPE)
-endfunction()
-
 foreach(VARIANT GRID MESH TEST)
   if(${VARIANT})
     string(TOLOWER "${VARIANT}" VARIANT_LOWER)
-    set(executable_name "DAMASK_${VARIANT_LOWER}")
+    set(executable_name "damask_${VARIANT_LOWER}")
     if(VARIANT_LOWER STREQUAL "test")
       set(variant_path "${PROJECT_SOURCE_DIR}/tests/unit_fortran")
     else()
@@ -44,9 +24,9 @@ foreach(VARIANT GRID MESH TEST)
       add_library(damask_c_${VARIANT_LOWER} STATIC ${damask_c})
       target_compile_definitions(damask_c_${VARIANT_LOWER} PUBLIC ${VARIANT})
       if(Boost_FOUND)
-        target_link_libraries(damask_c_${VARIANT_LOWER} PUBLIC Boost::program_options)
+        target_link_libraries(damask_c_${VARIANT_LOWER} PUBLIC Boost::program_options Boost::headers)
         target_compile_definitions(damask_c_${VARIANT_LOWER} PUBLIC BOOST)
-        add_compile_definitions(BOOST)
+        target_compile_definitions(damask_fortran_${VARIANT_LOWER} PRIVATE BOOST)
       endif()
       target_link_libraries(${executable_name} PRIVATE damask_c_${VARIANT_LOWER})
       target_link_directories(${executable_name} PRIVATE ${PETSC_LIBRARY_DIRS})
@@ -67,18 +47,10 @@ foreach(VARIANT GRID MESH TEST)
       endif()
 
       install(TARGETS ${executable_name} RUNTIME DESTINATION bin)
-      fs_case_sensitive(${CMAKE_INSTALL_PREFIX}/bin fs_is_case_sensitive)
-      if(fs_is_case_sensitive)
-        INSTALL(CODE "execute_process( \
-          COMMAND ${CMAKE_COMMAND} -E create_symlink \
-          ${executable_name} \
-          ${CMAKE_INSTALL_PREFIX}/bin/damask_${VARIANT_LOWER} \
-          )")
-      endif()
     else()
       add_library(${executable_name} OBJECT ${damask_fortran} ${damask_c})
-      exec_program(mktemp OUTPUT_VARIABLE nothing)
-      exec_program(mktemp ARGS -d OUTPUT_VARIABLE black_hole)
+      execute_process(COMMAND "mktemp" OUTPUT_VARIABLE nothing OUTPUT_STRIP_TRAILING_WHITESPACE)
+      execute_process(COMMAND "mktemp" "-d" OUTPUT_VARIABLE black_hole OUTPUT_STRIP_TRAILING_WHITESPACE)
       install(PROGRAMS ${nothing} DESTINATION ${black_hole})
     endif()
   endif()

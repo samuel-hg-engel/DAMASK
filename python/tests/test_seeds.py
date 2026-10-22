@@ -1,10 +1,10 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
-import pytest
 import numpy as np
+import pytest
 from scipy.spatial import cKDTree
 
 from damask import seeds
-from damask import grid_filters
+from damask import grid
 from damask import GeomGrid
 
 
@@ -12,7 +12,7 @@ from damask import GeomGrid
 def test_from_random(np_rng,cells):
     N_seeds = np_rng.integers(30,300)
     size = np.ones(3) + np_rng.random(3)
-    coords = seeds.from_random(size,N_seeds,cells,rng_seed=np_rng)
+    coords = seeds.from_random(size,N_seeds,cells,rng=np_rng)
     assert (0<=coords).all() and (coords<size).all()
 
 @pytest.mark.parametrize('periodic',[True,False])
@@ -39,7 +39,7 @@ def test_from_grid_reconstruct(np_rng):
     cells = np_rng.integers(10,20,3)
     N_seeds = np_rng.integers(30,300)
     size = np.ones(3) + np_rng.random(3)
-    coords = seeds.from_random(size,N_seeds,cells,rng_seed=np_rng)
+    coords = seeds.from_random(size,N_seeds,cells,rng=np_rng)
     grid_1 = GeomGrid.from_Voronoi_tessellation(cells,size,coords)
     coords,material = seeds.from_grid(grid_1)
     grid_2 = GeomGrid.from_Voronoi_tessellation(cells,size,coords,material)
@@ -50,7 +50,7 @@ def test_from_grid_reconstruct(np_rng):
 def test_from_grid_grid(np_rng,periodic,average):
     cells = np_rng.integers(10,20,3)
     size  = np.ones(3) + np_rng.random(3)
-    coords = grid_filters.coordinates0_point(cells,size).reshape(-1,3)
+    coords = grid.coordinates0_point(cells,size).reshape(-1,3)
     np_rng.shuffle(coords)
     grid_1 = GeomGrid.from_Voronoi_tessellation(cells,size,coords)
     coords,material = seeds.from_grid(grid_1,average=average,periodic=periodic)
@@ -64,8 +64,8 @@ def test_from_grid_selection(np_rng,periodic,average,invert):
     cells = np_rng.integers(10,20,3)
     N_seeds = np_rng.integers(30,300)
     size = np.ones(3) + np_rng.random(3)
-    coords = seeds.from_random(size,N_seeds,cells,rng_seed=np_rng)
-    grid = GeomGrid.from_Voronoi_tessellation(cells,size,coords)
+    coords = seeds.from_random(size,N_seeds,cells,rng=np_rng)
+    g = GeomGrid.from_Voronoi_tessellation(cells,size,coords)
     selection=np_rng.integers(N_seeds)+1
-    coords,material = seeds.from_grid(grid,average=average,periodic=periodic,invert_selection=invert,selection=[selection])
+    coords,material = seeds.from_grid(g,average=average,periodic=periodic,invert_selection=invert,selection=[selection])
     assert selection not in material if invert else (selection==material).all()

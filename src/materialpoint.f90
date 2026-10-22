@@ -30,8 +30,10 @@ module materialpoint
 #if   defined(MESH)
   use discretization_mesh
 #elif defined(GRID)
+#if !defined(BOOST)
   use base64
   use zlib
+#endif
   use discretization_grid
 #endif
 
@@ -53,14 +55,14 @@ subroutine materialpoint_initAll()
   call IO_init()
   call CLI_init()                                                                                   ! grid and mesh commandline interface
   call signal_init()
-#if defined(GRID)
+#if defined(GRID) && !defined(BOOST)
    call zlib_init()
    call base64_init()
 #endif
   call types_init()
   call YAML_init()
   call HDF5_utilities_init()
-  call result_init(restart=CLI_restartInc>0)
+  call result_init(restart = CLI_restartInc /= -1)
   call config_init()
   call math_init()
   call rotations_init()
@@ -91,7 +93,7 @@ subroutine materialpoint_init()
 
   print'(/,1x,a)', '<<<+-  materialpoint init  -+>>>'; flush(IO_STDOUT)
 
-  if (CLI_restartInc > 0) then
+  if (CLI_restartInc /= -1) then
     print'(/,1x,a,1x,i0)', 'loading restart information of increment',CLI_restartInc; flush(IO_STDOUT)
 
     fileHandle = HDF5_openFile(CLI_jobName//'_restart.hdf5','r')

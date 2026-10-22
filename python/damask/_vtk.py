@@ -1,12 +1,17 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
-import os
-import multiprocessing as mp
-import logging
 import contextlib
+import logging
+import os
+import threading
+from os import PathLike
 from pathlib import Path
-from typing import Optional, Union, Literal, Sequence
+from typing import Any, Literal
 
 import numpy as np
+import numpy.typing as npt
+
+from ._typehints import StrSequence
+
 
 # needed for visualization but might not be available everywhere
 # https://gitlab.kitware.com/vtk/vtk/-/issues/19687
@@ -68,10 +73,8 @@ from vtkmodules.util.numpy_support import (
     vtk_to_numpy,
 )
 
+from . import Colormap, Table, util
 from ._typehints import FloatSequence, IntSequence
-from . import util
-from . import Table
-from . import Colormap
 
 
 logger = logging.getLogger(__name__)
@@ -140,14 +143,15 @@ class VTK:
 
     def copy(self):
         """Return a deep copy."""
-        if   isinstance(self.vtk_data,vtkImageData):
-            dup = vtkImageData()
-        elif isinstance(self.vtk_data,vtkUnstructuredGrid):
-            dup = vtkUnstructuredGrid()
-        elif isinstance(self.vtk_data,vtkPolyData):
-            dup = vtkPolyData()
-        elif isinstance(self.vtk_data,vtkRectilinearGrid):
-            dup = vtkRectilinearGrid()
+        match self.vtk_data:
+            case vtkImageData():
+                dup = vtkImageData()
+            case vtkUnstructuredGrid():
+                dup = vtkUnstructuredGrid()
+            case vtkPolyData():
+                dup = vtkPolyData()
+            case vtkRectilinearGrid():
+                dup = vtkRectilinearGrid()
 
         dup.DeepCopy(self.vtk_data)
 
@@ -166,7 +170,7 @@ class VTK:
 
     @comments.setter
     def comments(self,
-                 comments: Sequence[str]):
+                 comments: StrSequence):
         """
         Set comments.
 
@@ -210,8 +214,9 @@ class VTK:
         return labels
 
 
-    @staticmethod
-    def from_image_data(cells: IntSequence,
+    @classmethod
+    def from_image_data(cls,
+                        cells: IntSequence,
                         size: FloatSequence,
                         origin: FloatSequence = np.zeros(3)) -> 'VTK':
         """
@@ -252,12 +257,13 @@ class VTK:
         vtk_data.SetOrigin(*(np.array(origin)))
         vtk_data.SetSpacing(*(np.array(size)/np.array(cells)))
 
-        return VTK(vtk_data)
+        return cls(vtk_data)
 
 
-    @staticmethod
-    def from_unstructured_grid(nodes: np.ndarray,
-                               connectivity: np.ndarray,
+    @classmethod
+    def from_unstructured_grid(cls,
+                               nodes: npt.NDArray[np.floating],
+                               connectivity: npt.NDArray[np.integer],
                                cell_type: Literal['TRIANGLE', 'TETRAHEDRON', 'QUADRILATERAL', 'HEXAHEDRON']
                               ) -> 'VTK':
         """
@@ -313,11 +319,12 @@ class VTK:
                       'TETR':VTK_LAGRANGE_TETRAHEDRON, 'HEXA':VTK_LAGRANGE_HEXAHEDRON}
         vtk_data.SetCells(cell_types[cell_type.split('_')[-1].upper()[:4]],cells)
 
-        return VTK(vtk_data)
+        return cls(vtk_data)
 
 
-    @staticmethod
-    def from_poly_data(points: np.ndarray) -> 'VTK':
+    @classmethod
+    def from_poly_data(cls,
+                       points: npt.NDArray[np.floating]) -> 'VTK':
         """
         Create VTK of type polyData.
 
@@ -346,17 +353,17 @@ class VTK:
         vtk_data.SetPoints(vtk_points)
         vtk_data.SetVerts(vtk_cells)
 
-        return VTK(vtk_data)
+        return cls(vtk_data)
 
 
-    @staticmethod
-    def from_rectilinear_grid(grid: FloatSequence) -> 'VTK':
+    @classmethod
+    def from_rectilinear_grid(cls,coordinates: FloatSequence) -> 'VTK':
         """
         Create VTK of type vtkRectilinearGrid.
 
         Parameters
         ----------
-        grid : sequence of sequences of floats, len (3)
+        coordinates : sequence of sequences of floats, len (3)
             Grid coordinates along x, y, and z directions.
 
         Returns
@@ -365,18 +372,19 @@ class VTK:
             VTK-based geometry without nodal or cell data.
         """
         vtk_data = vtkRectilinearGrid()
-        vtk_data.SetDimensions(*map(len,grid))
-        coord = [numpy_to_vtk(np.array(grid[i]),deep=True) for i in [0,1,2]]
+        vtk_data.SetDimensions(*map(len,coordinates))
+        coord = [numpy_to_vtk(np.array(coordinates[i]),deep=True) for i in [0,1,2]]
         [coord[i].SetName(n) for i,n in enumerate(['x','y','z'])]
         vtk_data.SetXCoordinates(coord[0])
         vtk_data.SetYCoordinates(coord[1])
         vtk_data.SetZCoordinates(coord[2])
 
-        return VTK(vtk_data)
+        return cls(vtk_data)
 
 
-    @staticmethod
-    def load(fname: Union[str, Path],
+    @classmethod
+    def load(cls,
+             fname: str | PathLike,
              dataset_type: Literal[None, 'ImageData', 'UnstructuredGrid', 'PolyData', 'RectilinearGrid'] = None) -> 'VTK':
         """
         Load from VTK file.
@@ -435,7 +443,8 @@ class VTK:
             reader.Update()
             vtk_data = reader.GetOutputAsDataSet()
 
-        return VTK(vtk_data)
+        return cls(vtk_data)
+
 
     def as_ASCII(self) -> str:
         """ASCII representation of the VTK data."""
@@ -453,7 +462,7 @@ class VTK:
         writer.Write()
 
     def save(self,
-             fname: Union[str, Path],
+             fname: str | PathLike,
              parallel: bool = True,
              compress: bool = True):
         """
@@ -468,7 +477,7 @@ class VTK:
         compress : bool, optional
             Compress with zlib algorithm. Defaults to True.
         """
-        writer: Optional[vtkXMLWriter] = (
+        writer: vtkXMLWriter | None = (
             vtkXMLImageDataWriter() if isinstance(self.vtk_data, vtkImageData) else
             vtkXMLUnstructuredGridWriter() if isinstance(self.vtk_data, vtkUnstructuredGrid) else
             vtkXMLPolyDataWriter() if isinstance(self.vtk_data, vtkPolyData) else
@@ -491,8 +500,8 @@ class VTK:
 
         if parallel:
             try:
-                mp_writer = mp.Process(target=self._write,args=(writer,))
-                mp_writer.start()
+                writer_th = threading.Thread(target=self._write,args=(writer,))
+                writer_th.start()
             except TypeError:
                 writer.Write()
         else:
@@ -500,7 +509,7 @@ class VTK:
 
 
     def save_VTKHDF(self,
-                    fname: Union[str, Path]):
+                    fname: str | PathLike):
         """
         Save as VTKHDF file.
 
@@ -527,29 +536,25 @@ class VTK:
 
 
     def set(self,
-            label: Optional[str] = None,
-            data: Union[None, np.ndarray, np.ma.MaskedArray] = None,
-            info: Optional[str] = None,
-            *,
-            table: Optional['Table'] = None) -> 'VTK':
+            label: str,
+            data: npt.NDArray[Any] | np.ma.MaskedArray,
+            component_names: StrSequence | None = None,
+            info: str | None = None) -> 'VTK':
         """
         Add new or replace existing point or cell data.
-
-        Data can either be a numpy.array, which requires a corresponding label,
-        or a damask.Table.
 
         Parameters
         ----------
         label : str, optional
             Label of data array.
-        data : numpy.ndarray or numpy.ma.MaskedArray, optional
+        data : numpy.ndarray or numpy.ma.MaskedArray
             Data to add or replace. First array dimension needs to match either
             number of cells or number of points.
+        component_names: sequence of str, optional
+            Name of each data component. Flattened component names are assigned to
+            flattened shape of one data row, assuming row-major order for both.
         info : str, optional
             Human-readable information about the data.
-        table : damask.Table, optional
-            Data to add or replace. Each table label is individually considered.
-            Number of rows needs to match either number of cells or number of points.
 
         Returns
         -------
@@ -570,7 +575,10 @@ class VTK:
         >>> cells = (16,8,16)
         >>> size = (1.0,0.5,1.0)
         >>> v = damask.VTK.from_image_data(cells=cells,size=size)
-        >>> print(v := v.set(label='F',data=np.broadcast_to(np.eye(3),(np.prod(cells),3,3))))
+        >>> print(v := v.set(label='F',data=np.broadcast_to(np.eye(3),(np.prod(cells),3,3)),
+        ...                  component_names = [['11','12','13'],
+        ...                                     ['21','22','23'],
+        ...                                     ['31','32','33']]))
         vtkImageData
         <BLANKLINE>
         # cells: 2048
@@ -578,58 +586,79 @@ class VTK:
         <BLANKLINE>
         # points: 2601
         """
-
-        def _add_array(vtk_data,
-                       label: str,
-                       data: np.ndarray):
-
-            N_p,N_c = vtk_data.GetNumberOfPoints(),vtk_data.GetNumberOfCells()
-            if (N_data := data.shape[0]) not in [N_p,N_c]:
-                raise ValueError(f'data count mismatch ({N_data} ≠ {N_p} & {N_c})')
-
-            data_ = data.reshape(N_data,-1) \
-                        .astype(np.single if data.dtype in [np.double,np.longdouble] else data.dtype)
-
-            if data.dtype.type is np.str_:
-                d = vtkStringArray()
-                for s in np.squeeze(data_):
-                    d.InsertNextValue(s)
-            else:
-                d = numpy_to_vtk(data_,deep=True)
-
-            d.SetName(label)
-
-            if N_data == N_p:
-                vtk_data.GetPointData().AddArray(d)
-            if N_data == N_c:
-                vtk_data.GetCellData().AddArray(d)
-
-        if data is None and table is None:
-            raise KeyError('no data given')
-        if data is not None and table is not None:
-            raise KeyError('cannot use both, data and table')
-
         dup = self.copy()
-        if isinstance(data,np.ndarray):
-            if label is not None:
-                _add_array(dup.vtk_data,
-                           label,
-                           np.where(data.mask,data.fill_value,data) if isinstance(data,np.ma.MaskedArray) else data)
-                if info is not None: dup.comments.append(f'{label}: {info}')
-            else:
-                raise ValueError('no label defined for data')
-        elif isinstance(table,Table):
-            for l in table.labels:
-                _add_array(dup.vtk_data,l,table.get(l))
-                if info is not None: dup.comments.append(f'{l}: {info}')
+
+        N_p,N_c = dup.vtk_data.GetNumberOfPoints(),dup.vtk_data.GetNumberOfCells()
+        if (N_data := data.shape[0]) not in [N_p,N_c]:
+            raise ValueError(f'data count mismatch ({N_data} ≠ {N_p} & {N_c})')
+
+        data_ = (data.filled() if isinstance(data,np.ma.MaskedArray) else data) \
+                .reshape(N_data,-1) \
+                .astype(np.single if data.dtype in [np.double,np.longdouble] else data.dtype)
+
+        if data.dtype.type is np.str_:
+            d = vtkStringArray()
+            for s in np.squeeze(data_):
+                d.InsertNextValue(s)
         else:
-            raise TypeError
+            d = numpy_to_vtk(data_,deep=True)
+
+        d.SetName(label)
+        if component_names is not None:
+            for c,n in zip(range(data_.shape[1]),np.asarray(component_names).flatten(),strict=True):
+                d.SetComponentName(c,str(n))
+
+        if N_data == N_p:
+            dup.vtk_data.GetPointData().AddArray(d)
+        if N_data == N_c:
+            dup.vtk_data.GetCellData().AddArray(d)
+
+        if info is not None: dup.comments.append(f'{label}: {info}')
+
+        return dup
+
+
+    def set_from_table(self,
+                       table: 'Table',
+                       labels: StrSequence | None = None,
+                       component_names: dict[str,StrSequence] | None = None,
+                       info: str | None = None) -> 'VTK':
+        """
+        Add new or replace existing point or cell data from damask.Table.
+
+        Parameters
+        ----------
+        table : damask.Table
+            Data to add or replace. Each table label is individually considered.
+            Number of rows needs to match either number of cells or number of points.
+        labels : sequence of str, optional
+            Labels of data to consider. By default, all data is added.
+        component_names: dictionary of sequence of str, optional
+            Name of each data component per table entry. Flattened component names are
+            assigned to flattened data shape of corresponding table entry, assuming
+            row-major order for both.
+        info : str, optional
+            Human-readable information about the data.
+
+        Returns
+        -------
+        updated : damask.VTK
+            Updated VTK-based geometry.
+
+        Notes
+        -----
+        If the number of cells equals the number of points, the data is added to both.
+        """
+        dup = self.copy()
+        for label in (labels if labels is not None else table.labels):
+            dup = dup.set(label,table.get(label),info=info,
+                          component_names=(component_names.get(label,None) if component_names else None))
 
         return dup
 
 
     def get(self,
-            label: str) -> np.ndarray:
+            label: str) -> npt.NDArray[Any]:
         """
         Get either cell or point data.
 
@@ -651,7 +680,7 @@ class VTK:
         point_data: vtkPointData = self.vtk_data.GetPointData()
 
         if label in [cell_data.GetArrayName(i) for i in range(cell_data.GetNumberOfArrays())]:
-            vtk_container: Union[vtkPointData,vtkCellData] = cell_data
+            vtk_container: vtkPointData | vtkCellData = cell_data
         elif label in [point_data.GetArrayName(i) for i in range(point_data.GetNumberOfArrays())]:
             vtk_container = point_data
         else:
@@ -699,8 +728,8 @@ class VTK:
 
 
     def show(self,
-             label: Optional[str] = None,
-             colormap: Union[Colormap, str] = 'cividis'):
+             label: str | None = None,
+             colormap: str | Colormap = 'cividis'):
         """
         Render.
 
@@ -717,6 +746,9 @@ class VTK:
         (this includes tensor datasets as they are flattened).
         """
         # See http://compilatrix.com/article/vtk-1 for possible improvements.
+        if os.name == 'posix' and 'DISPLAY' not in os.environ:
+            logger.warning('Found no rendering device')
+            return
         try:
             import wx
             _ = wx.App(False)                                                                       # noqa
@@ -769,8 +801,5 @@ class VTK:
 
         iren = vtkRenderWindowInteractor()
         iren.SetRenderWindow(window)
-        if os.name == 'posix' and 'DISPLAY' not in os.environ:
-            logger.warning('Found no rendering device')
-        else:
-            window.Render()
-            iren.Start()
+        window.Render()
+        iren.Start()

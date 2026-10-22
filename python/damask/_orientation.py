@@ -1,23 +1,20 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 import copy
 import warnings
-from typing import Optional, Union, TypeVar, Literal, Sequence, NamedTuple, overload
+from typing import Literal, NamedTuple, Sequence, Union, TypeVar, overload
 
 import numpy as np
 import numpy.typing as npt
 
-from ._typehints import FloatSequence, IntSequence, CrystalFamily, BravaisLattice, NumpyRngSeed
-from . import Rotation
-from . import Crystal
-from . import util
-from . import tensor
+from . import Crystal, Rotation, tensor, util
+from ._typehints import BravaisLattice, CrystalFamily, FloatSequence, IntSequence, RNGLike, SeedLike
 
 
 MyType = TypeVar('MyType', bound='Orientation')
 
 class DisorientationTuple(NamedTuple):
     disorientation: 'Orientation'
-    operators: np.ndarray
+    operators: npt.NDArray[np.integer]
 
 
 class AverageTuple(NamedTuple):
@@ -26,8 +23,8 @@ class AverageTuple(NamedTuple):
 
 
 class ToSSTTuple(NamedTuple):
-    vector_sst: np.ndarray
-    operator: np.ndarray
+    vector_sst: npt.NDArray[np.floating]
+    operator: npt.NDArray[np.integer]
 
 
 class Orientation(Rotation,Crystal):
@@ -89,12 +86,12 @@ class Orientation(Rotation,Crystal):
     """
 
     def __init__(self,
-                 rotation: Union[FloatSequence, Rotation] = np.array([1.,0.,0.,0.]),
+                 rotation: FloatSequence | Rotation = np.array([1.,0.,0.,0.]),
                  *,
-                 family: Optional[CrystalFamily] = None,
-                 lattice: Optional[BravaisLattice] = None,
-                 a: Optional[float] = None, b: Optional[float] = None, c: Optional[float] = None,
-                 alpha: Optional[float] = None, beta: Optional[float] = None, gamma: Optional[float] = None,
+                 family: CrystalFamily | None = None,
+                 lattice: BravaisLattice | None = None,
+                 a: float | None = None, b: float | None = None, c: float | None = None,
+                 alpha: float | None = None, beta: float | None = None, gamma: float | None = None,
                  degrees: bool = False):
         """
         New orientation.
@@ -143,7 +140,7 @@ class Orientation(Rotation,Crystal):
 
 
     def __copy__(self: MyType,
-                 rotation: Optional[Union[FloatSequence, Rotation]] = None) -> MyType:
+                 rotation: FloatSequence | Rotation | None = None) -> MyType:
         """
         Return deepcopy(self).
 
@@ -276,16 +273,17 @@ class Orientation(Rotation,Crystal):
         return self.copy(Rotation(self.quaternion)*Rotation(other.quaternion))
 
 
-    @staticmethod
-    def from_quaternion(q: Union[Sequence[FloatSequence], np.ndarray],
+    @classmethod
+    def from_quaternion(cls,
+                        q: Sequence[FloatSequence] | npt.NDArray[np.floating],
                         accept_homomorph: bool = False,
                         normalize: bool = False,
                         P: Literal[1, -1] = -1,
                         *,
-                        family: Optional[CrystalFamily] = None,
-                        lattice: Optional[BravaisLattice] = None,
-                        a: Optional[float] = None, b: Optional[float] = None, c: Optional[float] = None,
-                        alpha: Optional[float] = None, beta: Optional[float] = None, gamma: Optional[float] = None,
+                        family: CrystalFamily | None = None,
+                        lattice: BravaisLattice | None = None,
+                        a: float | None = None, b: float | None = None, c: float | None = None,
+                        alpha: float | None = None, beta: float | None = None, gamma: float | None = None,
                         degrees: bool = False) -> 'Orientation':
         """
         Initialize from quaternion.
@@ -326,19 +324,20 @@ class Orientation(Rotation,Crystal):
         new : damask.Orientation
             Orientation representing the given quaternion.
         """
-        return Orientation(Rotation.from_quaternion(q,accept_homomorph,normalize,P),
-                           family=family,lattice=lattice,
-                           a=a,b=b,c=c, alpha=alpha,beta=beta,gamma=gamma,
-                           degrees=degrees)
+        return cls(Rotation.from_quaternion(q,accept_homomorph,normalize,P),
+                   family=family,lattice=lattice,
+                   a=a,b=b,c=c, alpha=alpha,beta=beta,gamma=gamma,
+                   degrees=degrees)
 
-    @staticmethod
-    def from_Euler_angles(phi: np.ndarray,
+    @classmethod
+    def from_Euler_angles(cls,
+                          phi: npt.NDArray[np.floating],
                           degrees: bool = False,
                           *,
-                          family: Optional[CrystalFamily] = None,
-                          lattice: Optional[BravaisLattice] = None,
-                          a: Optional[float] = None, b: Optional[float] = None, c: Optional[float] = None,
-                          alpha: Optional[float] = None, beta: Optional[float] = None, gamma: Optional[float] = None,
+                          family: CrystalFamily | None = None,
+                          lattice: BravaisLattice | None = None,
+                          a: float | None = None, b: float | None = None, c: float | None = None,
+                          alpha: float | None = None, beta: float | None = None, gamma: float | None = None,
                           ) -> 'Orientation':
         """
         Initialize from Bunge Euler angles.
@@ -377,21 +376,22 @@ class Orientation(Rotation,Crystal):
         -----
         Bunge Euler angles correspond to a rotation axis sequence of z–x'–z''.
         """
-        return Orientation(Rotation.from_Euler_angles(phi,degrees),
-                           family=family,lattice=lattice,
-                           a=a,b=b,c=c, alpha=alpha,beta=beta,gamma=gamma,
-                           degrees=degrees)
+        return cls(Rotation.from_Euler_angles(phi,degrees),
+                   family=family,lattice=lattice,
+                   a=a,b=b,c=c, alpha=alpha,beta=beta,gamma=gamma,
+                   degrees=degrees)
 
-    @staticmethod
-    def from_axis_angle(n_omega: np.ndarray,
+    @classmethod
+    def from_axis_angle(cls,
+                        n_omega: npt.NDArray[np.floating],
                         degrees: bool = False,
                         normalize: bool = False,
                         P: Literal[1, -1] = -1,
                         *,
-                        family: Optional[CrystalFamily] = None,
-                        lattice: Optional[BravaisLattice] = None,
-                        a: Optional[float] = None, b: Optional[float] = None, c: Optional[float] = None,
-                        alpha: Optional[float] = None, beta: Optional[float] = None, gamma: Optional[float] = None,
+                        family: CrystalFamily | None = None,
+                        lattice: BravaisLattice | None = None,
+                        a: float | None = None, b: float | None = None, c: float | None = None,
+                        alpha: float | None = None, beta: float | None = None, gamma: float | None = None,
                         ) -> 'Orientation':
         """
         Initialize from axis–angle pair.
@@ -430,20 +430,21 @@ class Orientation(Rotation,Crystal):
         new : damask.Orientation
             Orientation representing the given axis-angle pair.
         """
-        return Orientation(Rotation.from_axis_angle(n_omega,degrees,normalize,P),
-                           family=family,lattice=lattice,
-                           a=a,b=b,c=c, alpha=alpha,beta=beta,gamma=gamma,
-                           degrees=degrees)
+        return cls(Rotation.from_axis_angle(n_omega,degrees,normalize,P),
+                   family=family,lattice=lattice,
+                   a=a,b=b,c=c, alpha=alpha,beta=beta,gamma=gamma,
+                   degrees=degrees)
 
-    @staticmethod
-    def from_basis(basis: np.ndarray,
+    @classmethod
+    def from_basis(cls,
+                   basis: npt.NDArray[np.floating],
                    orthonormal: bool = True,
                    reciprocal: bool = False,
                    *,
-                   family: Optional[CrystalFamily] = None,
-                   lattice: Optional[BravaisLattice] = None,
-                   a: Optional[float] = None, b: Optional[float] = None, c: Optional[float] = None,
-                   alpha: Optional[float] = None, beta: Optional[float] = None, gamma: Optional[float] = None,
+                   family: CrystalFamily | None = None,
+                   lattice: BravaisLattice | None = None,
+                   a: float | None = None, b: float | None = None, c: float | None = None,
+                   alpha: float | None = None, beta: float | None = None, gamma: float | None = None,
                    degrees: bool = False) -> 'Orientation':
         """
         Initialize from basis vector triplet.
@@ -481,19 +482,20 @@ class Orientation(Rotation,Crystal):
         new : damask.Orientation
             Orientation representing the given basis.
         """
-        return Orientation(Rotation.from_basis(basis,orthonormal,reciprocal),
-                           family=family,lattice=lattice,
-                           a=a,b=b,c=c, alpha=alpha,beta=beta,gamma=gamma,
-                           degrees=degrees)
+        return cls(Rotation.from_basis(basis,orthonormal,reciprocal),
+                   family=family,lattice=lattice,
+                   a=a,b=b,c=c, alpha=alpha,beta=beta,gamma=gamma,
+                   degrees=degrees)
 
-    @staticmethod
-    def from_matrix(R: np.ndarray,
+    @classmethod
+    def from_matrix(cls,
+                    R: npt.NDArray[np.floating],
                     normalize: bool = False,
                     *,
-                    family: Optional[CrystalFamily] = None,
-                    lattice: Optional[BravaisLattice] = None,
-                    a: Optional[float] = None, b: Optional[float] = None, c: Optional[float] = None,
-                    alpha: Optional[float] = None, beta: Optional[float] = None, gamma: Optional[float] = None,
+                    family: CrystalFamily | None = None,
+                    lattice: BravaisLattice | None = None,
+                    a: float | None = None, b: float | None = None, c: float | None = None,
+                    alpha: float | None = None, beta: float | None = None, gamma: float | None = None,
                     degrees: bool = False) -> 'Orientation':
         """
         Initialize from rotation matrix.
@@ -529,20 +531,21 @@ class Orientation(Rotation,Crystal):
         new : damask.Orientation
             Orientation representing the given rotation matrix.
         """
-        return Orientation(Rotation.from_matrix(R,normalize),
-                           family=family,lattice=lattice,
-                           a=a,b=b,c=c, alpha=alpha,beta=beta,gamma=gamma,
-                           degrees=degrees)
+        return cls(Rotation.from_matrix(R,normalize),
+                   family=family,lattice=lattice,
+                   a=a,b=b,c=c, alpha=alpha,beta=beta,gamma=gamma,
+                   degrees=degrees)
 
-    @staticmethod
-    def from_parallel(source: np.ndarray,
-                      target: np.ndarray,
+    @classmethod
+    def from_parallel(cls,
+                      source: npt.NDArray[np.floating],
+                      target: npt.NDArray[np.floating],
                       active: bool = False,
                       *,
-                      family: Optional[CrystalFamily] = None,
-                      lattice: Optional[BravaisLattice] = None,
-                      a: Optional[float] = None, b: Optional[float] = None, c: Optional[float] = None,
-                      alpha: Optional[float] = None, beta: Optional[float] = None, gamma: Optional[float] = None,
+                      family: CrystalFamily | None = None,
+                      lattice: BravaisLattice | None = None,
+                      a: float | None = None, b: float | None = None, c: float | None = None,
+                      alpha: float | None = None, beta: float | None = None, gamma: float | None = None,
                       degrees: bool = False) -> 'Orientation':
         """
         Initialize from pairs of two orthogonal basis vectors.
@@ -587,20 +590,21 @@ class Orientation(Rotation,Crystal):
         are considered "active", the resulting rotation will be $B^{-1}⋅A$ instead
         of the default result $B⋅A^{-1}$.
         """
-        return Orientation(Rotation.from_parallel(source,target,active),
-                           family=family,lattice=lattice,
-                           a=a,b=b,c=c, alpha=alpha,beta=beta,gamma=gamma,
-                           degrees=degrees)
+        return cls(Rotation.from_parallel(source,target,active),
+                   family=family,lattice=lattice,
+                   a=a,b=b,c=c, alpha=alpha,beta=beta,gamma=gamma,
+                   degrees=degrees)
 
-    @staticmethod
-    def from_Rodrigues_vector(rho: np.ndarray,
+    @classmethod
+    def from_Rodrigues_vector(cls,
+                              rho: npt.NDArray[np.floating],
                               normalize: bool = False,
                               P: Literal[1, -1] = -1,
                               *,
-                              family: Optional[CrystalFamily] = None,
-                              lattice: Optional[BravaisLattice] = None,
-                              a: Optional[float] = None, b: Optional[float] = None, c: Optional[float] = None,
-                              alpha: Optional[float] = None, beta: Optional[float] = None, gamma: Optional[float] = None,
+                              family: CrystalFamily | None = None,
+                              lattice: BravaisLattice | None = None,
+                              a: float | None = None, b: float | None = None, c: float | None = None,
+                              alpha: float | None = None, beta: float | None = None, gamma: float | None = None,
                               degrees: bool = False) -> 'Orientation':
         """
         Initialize from Rodrigues–Frank vector (with angle separated from axis).
@@ -638,19 +642,20 @@ class Orientation(Rotation,Crystal):
         new : damask.Orientation
             Orientation representing the given Rodrigues–Frank vector.
         """
-        return Orientation(Rotation.from_Rodrigues_vector(rho,normalize,P),
-                           family=family,lattice=lattice,
-                           a=a,b=b,c=c, alpha=alpha,beta=beta,gamma=gamma,
-                           degrees=degrees)
+        return cls(Rotation.from_Rodrigues_vector(rho,normalize,P),
+                   family=family,lattice=lattice,
+                   a=a,b=b,c=c, alpha=alpha,beta=beta,gamma=gamma,
+                   degrees=degrees)
 
-    @staticmethod
-    def from_homochoric(h: np.ndarray,
+    @classmethod
+    def from_homochoric(cls,
+                        h: npt.NDArray[np.floating],
                         P: Literal[1, -1] = -1,
                         *,
-                        family: Optional[CrystalFamily] = None,
-                        lattice: Optional[BravaisLattice] = None,
-                        a: Optional[float] = None, b: Optional[float] = None, c: Optional[float] = None,
-                        alpha: Optional[float] = None, beta: Optional[float] = None, gamma: Optional[float] = None,
+                        family: CrystalFamily | None = None,
+                        lattice: BravaisLattice | None = None,
+                        a: float | None = None, b: float | None = None, c: float | None = None,
+                        alpha: float | None = None, beta: float | None = None, gamma: float | None = None,
                         degrees: bool = False) -> 'Orientation':
         """
         Initialize from homochoric vector.
@@ -686,19 +691,20 @@ class Orientation(Rotation,Crystal):
         new : damask.Orientation
             Orientation representing the given homochoric vector.
         """
-        return Orientation(Rotation.from_homochoric(h,P),
-                           family=family,lattice=lattice,
-                           a=a,b=b,c=c, alpha=alpha,beta=beta,gamma=gamma,
-                           degrees=degrees)
+        return cls(Rotation.from_homochoric(h,P),
+                   family=family,lattice=lattice,
+                   a=a,b=b,c=c, alpha=alpha,beta=beta,gamma=gamma,
+                   degrees=degrees)
 
-    @staticmethod
-    def from_cubochoric(x: np.ndarray,
+    @classmethod
+    def from_cubochoric(cls,
+                        x: npt.NDArray[np.floating],
                         P: Literal[1, -1] = -1,
                         *,
-                        family: Optional[CrystalFamily] = None,
-                        lattice: Optional[BravaisLattice] = None,
-                        a: Optional[float] = None, b: Optional[float] = None, c: Optional[float] = None,
-                        alpha: Optional[float] = None, beta: Optional[float] = None, gamma: Optional[float] = None,
+                        family: CrystalFamily | None = None,
+                        lattice: BravaisLattice | None = None,
+                        a: float | None = None, b: float | None = None, c: float | None = None,
+                        alpha: float | None = None, beta: float | None = None, gamma: float | None = None,
                         degrees: bool = False) -> 'Orientation':
         """
         Initialize from cubochoric vector.
@@ -734,19 +740,20 @@ class Orientation(Rotation,Crystal):
         new : damask.Orientation
             Orientation representing the given cubochoric vector.
         """
-        return Orientation(Rotation.from_cubochoric(x,P),
-                           family=family,lattice=lattice,
-                           a=a,b=b,c=c, alpha=alpha,beta=beta,gamma=gamma,
-                           degrees=degrees)
+        return cls(Rotation.from_cubochoric(x,P),
+                   family=family,lattice=lattice,
+                   a=a,b=b,c=c, alpha=alpha,beta=beta,gamma=gamma,
+                   degrees=degrees)
 
-    @staticmethod
-    def from_random(shape: Union[None, int, IntSequence] = None,
-                    rng_seed: Optional[NumpyRngSeed] = None,
+    @classmethod
+    def from_random(cls,
+                    shape: int | IntSequence | None = None,
+                    rng: RNGLike | SeedLike | None = None,
                     *,
-                    family: Optional[CrystalFamily] = None,
-                    lattice: Optional[BravaisLattice] = None,
-                    a: Optional[float] = None, b: Optional[float] = None, c: Optional[float] = None,
-                    alpha: Optional[float] = None, beta: Optional[float] = None, gamma: Optional[float] = None,
+                    family: CrystalFamily | None = None,
+                    lattice: BravaisLattice | None = None,
+                    a: float | None = None, b: float | None = None, c: float | None = None,
+                    alpha: float | None = None, beta: float | None = None, gamma: float | None = None,
                     degrees: bool = False) -> 'Orientation':
         """
         Initialize with samples from a uniform distribution.
@@ -755,9 +762,11 @@ class Orientation(Rotation,Crystal):
         ----------
         shape : (sequence of) int, optional
             Output shape. Defaults to None, which gives a scalar.
-        rng_seed : {None, int, array_like[ints], SeedSequence, BitGenerator, Generator}, optional
-            A seed to initialize the BitGenerator.
-            Defaults to None, i.e. unpredictable entropy will be pulled from the OS.
+        rng : numpy.random.Generator, optional
+            Pseudorandom number generator state. When rng is None, a new
+            numpy.random.Generator is created using entropy from the operating
+            system. Types other than numpy.random.Generator are passed to
+            numpy.random.default_rng to instantiate a ``Generator``.
         family : {'triclinic', 'monoclinic', 'orthorhombic', 'tetragonal', 'hexagonal', 'cubic'}, optional
             Name of the crystal family.
             Will be inferred if 'lattice' is given.
@@ -783,23 +792,24 @@ class Orientation(Rotation,Crystal):
         new : damask.Orientation
             Random orientation of given shape.
         """
-        return Orientation(Rotation.from_random(shape,rng_seed),
-                           family=family,lattice=lattice,
-                           a=a,b=b,c=c, alpha=alpha,beta=beta,gamma=gamma,
-                           degrees=degrees)
+        return cls(Rotation.from_random(shape,rng),
+                   family=family,lattice=lattice,
+                   a=a,b=b,c=c, alpha=alpha,beta=beta,gamma=gamma,
+                   degrees=degrees)
 
-    @staticmethod
-    def from_ODF(weights: np.ndarray,
-                 phi: np.ndarray,
-                 shape: Union[None, int, IntSequence] = None,
+    @classmethod
+    def from_ODF(cls,
+                 weights: npt.NDArray[np.floating],
+                 phi: npt.NDArray[np.floating],
+                 shape: int | IntSequence | None = None,
                  degrees: bool = False,
                  fractions: bool = True,
-                 rng_seed: Optional[NumpyRngSeed] = None,
+                 rng: RNGLike | SeedLike | None = None,
                  *,
-                 family: Optional[CrystalFamily] = None,
-                 lattice: Optional[BravaisLattice] = None,
-                 a: Optional[float] = None, b: Optional[float] = None, c: Optional[float] = None,
-                 alpha: Optional[float] = None, beta: Optional[float] = None, gamma: Optional[float] = None,
+                 family: CrystalFamily | None = None,
+                 lattice: BravaisLattice | None = None,
+                 a: float | None = None, b: float | None = None, c: float | None = None,
+                 alpha: float | None = None, beta: float | None = None, gamma: float | None = None,
                  ) -> 'Orientation':
         """
         Initialize with samples from a binned orientation distribution function (ODF).
@@ -813,13 +823,15 @@ class Orientation(Rotation,Crystal):
         shape : (sequence of) int, optional
             Output shape. Defaults to None, which gives a scalar.
         degrees : bool, optional
-            Angles are given in degrees. Defaults to True.
+            Angles are given in degrees. Defaults to False.
         fractions : bool, optional
             ODF values correspond to volume fractions, not probability densities.
             Defaults to True.
-        rng_seed : {None, int, array_like[ints], SeedSequence, BitGenerator, Generator}, optional
-            A seed to initialize the BitGenerator.
-            Defaults to None, i.e. unpredictable entropy will be pulled from the OS.
+        rng : numpy.random.Generator, optional
+            Pseudorandom number generator state. When rng is None, a new
+            numpy.random.Generator is created using entropy from the operating
+            system. Types other than numpy.random.Generator are passed to
+            numpy.random.default_rng to instantiate a ``Generator``.
         family : {'triclinic', 'monoclinic', 'orthorhombic', 'tetragonal', 'hexagonal', 'cubic'}, optional
             Name of the crystal family.
             Will be inferred if 'lattice' is given.
@@ -849,29 +861,30 @@ class Orientation(Rotation,Crystal):
         probability densities, p, defined on grid points with ϕ = 0 will never
         result in reconstructed orientations as their dV/V = p dγ = p × 0.
         Hence, it is recommended to transform any such dataset to a
-        cell-centered version, which avoids grid points at ϕ = 0.
+        cell-centered variant, which avoids grid points at ϕ = 0.
 
         References
         ----------
         P. Eisenlohr and F. Roters, Computational Materials Science 42(4):670-678, 2008
         https://doi.org/10.1016/j.commatsci.2007.09.015
         """
-        return Orientation(Rotation.from_ODF(weights,phi,shape,degrees,fractions,rng_seed),
-                           family=family,lattice=lattice,
-                           a=a,b=b,c=c, alpha=alpha,beta=beta,gamma=gamma,
-                           degrees=degrees)
+        return cls(Rotation.from_ODF(weights,phi,shape,degrees,fractions,rng),
+                   family=family,lattice=lattice,
+                   a=a,b=b,c=c, alpha=alpha,beta=beta,gamma=gamma,
+                   degrees=degrees)
 
-    @staticmethod
-    def from_spherical_component(center: Union[Rotation,'Orientation'],
+    @classmethod
+    def from_spherical_component(cls,
+                                 center: Union[Rotation, 'Orientation'],
                                  sigma: float,
-                                 shape: Union[None, int, IntSequence] = None,
+                                 shape: int | IntSequence | None = None,
                                  degrees: bool = False,
-                                 rng_seed: Optional[NumpyRngSeed] = None,
+                                 rng: RNGLike | SeedLike | None = None,
                                  *,
-                                 family: Optional[CrystalFamily] = None,
-                                 lattice: Optional[BravaisLattice] = None,
-                                 a: Optional[float] = None, b: Optional[float] = None, c: Optional[float] = None,
-                                 alpha: Optional[float] = None, beta: Optional[float] = None, gamma: Optional[float] = None,
+                                 family: CrystalFamily | None = None,
+                                 lattice: BravaisLattice | None = None,
+                                 a: float | None = None, b: float | None = None, c: float | None = None,
+                                 alpha: float | None = None, beta: float | None = None, gamma: float | None = None,
                                  ) -> 'Orientation':
         """
         Initialize with samples from a Gaussian distribution around a given center.
@@ -886,9 +899,11 @@ class Orientation(Rotation,Crystal):
             Output shape. Defaults to None, which gives a scalar.
         degrees : bool, optional
             Standard deviation is given in degrees. Defaults to False.
-        rng_seed : {None, int, array_like[ints], SeedSequence, BitGenerator, Generator}, optional
-            A seed to initialize the BitGenerator.
-            Defaults to None, i.e. unpredictable entropy will be pulled from the OS.
+        rng : numpy.random.Generator, optional
+            Pseudorandom number generator state. When rng is None, a new
+            numpy.random.Generator is created using entropy from the operating
+            system. Types other than numpy.random.Generator are passed to
+            numpy.random.default_rng to instantiate a ``Generator``.
         family : {'triclinic', 'monoclinic', 'orthorhombic', 'tetragonal', 'hexagonal', 'cubic'}, optional
             Name of the crystal family.
             Will be inferred if 'lattice' is given.
@@ -912,23 +927,24 @@ class Orientation(Rotation,Crystal):
         new : damask.Orientation
             Orientation sampled from normal distribution around a center.
         """
-        return Orientation(Rotation.from_spherical_component(center,sigma,shape,degrees,rng_seed),
-                           family=family,lattice=lattice,
-                           a=a,b=b,c=c, alpha=alpha,beta=beta,gamma=gamma,
-                           degrees=degrees)
+        return cls(Rotation.from_spherical_component(center,sigma,shape,degrees,rng),
+                   family=family,lattice=lattice,
+                   a=a,b=b,c=c, alpha=alpha,beta=beta,gamma=gamma,
+                   degrees=degrees)
 
-    @staticmethod
-    def from_fiber_component(crystal: IntSequence,
+    @classmethod
+    def from_fiber_component(cls,
+                             crystal: IntSequence,
                              sample: IntSequence,
                              sigma: float = 0.,
-                             shape: Union[None, int, IntSequence] = None,
+                             shape: int | IntSequence | None = None,
                              degrees: bool = False,
-                             rng_seed: Optional[NumpyRngSeed] = None,
+                             rng: RNGLike | SeedLike | None = None,
                              *,
-                             family: Optional[CrystalFamily] = None,
-                             lattice: Optional[BravaisLattice] = None,
-                             a: Optional[float] = None, b: Optional[float] = None, c: Optional[float] = None,
-                             alpha: Optional[float] = None, beta: Optional[float] = None, gamma: Optional[float] = None,
+                             family: CrystalFamily | None = None,
+                             lattice: BravaisLattice | None = None,
+                             a: float | None = None, b: float | None = None, c: float | None = None,
+                             alpha: float | None = None, beta: float | None = None, gamma: float | None = None,
                              ) -> 'Orientation':
         """
         Initialize with samples from a Gaussian distribution around a given direction.
@@ -948,9 +964,11 @@ class Orientation(Rotation,Crystal):
             Output shape. Defaults to None, which gives a scalar.
         degrees : bool, optional
             Angles are given in degrees. Defaults to False.
-        rng_seed : {None, int, array_like[ints], SeedSequence, BitGenerator, Generator}, optional
-            A seed to initialize the BitGenerator.
-            Defaults to None, i.e. unpredictable entropy will be pulled from the OS.
+        rng : numpy.random.Generator, optional
+            Pseudorandom number generator state. When rng is None, a new
+            numpy.random.Generator is created using entropy from the operating
+            system. Types other than numpy.random.Generator are passed to
+            numpy.random.default_rng to instantiate a ``Generator``.
         family : {'triclinic', 'monoclinic', 'orthorhombic', 'tetragonal', 'hexagonal', 'cubic'}, optional
             Name of the crystal family.
             Will be inferred if 'lattice' is given.
@@ -998,19 +1016,20 @@ class Orientation(Rotation,Crystal):
         A. Heinz and P. Neumann, Acta Crystallographica Section A 47:780-789, 1991
         https://doi.org/10.1107/S0108767391006864
         """
-        return Orientation(Rotation.from_fiber_component(crystal,sample,sigma,shape,degrees,rng_seed),
-                           family=family,lattice=lattice,
-                           a=a,b=b,c=c, alpha=alpha,beta=beta,gamma=gamma,
-                           degrees=degrees)
+        return cls(Rotation.from_fiber_component(crystal,sample,sigma,shape,degrees,rng),
+                   family=family,lattice=lattice,
+                   a=a,b=b,c=c, alpha=alpha,beta=beta,gamma=gamma,
+                   degrees=degrees)
 
-    @staticmethod
-    def from_directions(uvw: IntSequence,
+    @classmethod
+    def from_directions(cls,
+                        uvw: IntSequence,
                         hkl: IntSequence,
                         *,
-                        family: Optional[CrystalFamily] = None,
-                        lattice: Optional[BravaisLattice] = None,
-                        a: Optional[float] = None, b: Optional[float] = None, c: Optional[float] = None,
-                        alpha: Optional[float] = None, beta: Optional[float] = None, gamma: Optional[float] = None,
+                        family: CrystalFamily | None = None,
+                        lattice: BravaisLattice | None = None,
+                        a: float | None = None, b: float | None = None, c: float | None = None,
+                        alpha: float | None = None, beta: float | None = None, gamma: float | None = None,
                         degrees: bool = False) -> 'Orientation':
         """
         Initialize orientation object from the crystallographic direction and plane parallel to lab x and z, respectively.
@@ -1047,10 +1066,10 @@ class Orientation(Rotation,Crystal):
             Orientation representing the relationship between direction and plane
             and lab x- and z-direction.
         """
-        o = Orientation(rotation=[1,0,0,0],
-                        family=family,lattice=lattice,
-                        a=a,b=b,c=c, alpha=alpha,beta=beta,gamma=gamma,
-                        degrees=degrees)
+        o = cls(rotation=[1,0,0,0],
+                family=family,lattice=lattice,
+                a=a,b=b,c=c, alpha=alpha,beta=beta,gamma=gamma,
+                degrees=degrees)
         x = o.to_frame(uvw=uvw)
         z = o.to_frame(hkl=hkl)
         om = np.stack([x,np.cross(z,x),z],axis=-2)
@@ -1082,7 +1101,7 @@ class Orientation(Rotation,Crystal):
 
 
     @property
-    def in_FZ(self) -> Union[np.bool_, np.ndarray]:
+    def in_FZ(self) -> np.bool_ | npt.NDArray[np.bool_]:
         """
         Check whether orientation falls into fundamental zone of own symmetry.
 
@@ -1104,31 +1123,30 @@ class Orientation(Rotation,Crystal):
 
         with np.errstate(invalid='ignore'):
             # using '*'/prod for 'and'
-            if   self.family == 'cubic':
-                return (np.prod(np.sqrt(2)-1. >= rho_abs,axis=-1) *
-                                   (1. >= np.sum(rho_abs,axis=-1))).astype(bool)
-            if self.family == 'hexagonal':
-                return (np.prod(1.  >= rho_abs,axis=-1) *
-                                (2. >= np.sqrt(3)*rho_abs[...,0] + rho_abs[...,1]) *
-                                (2. >= np.sqrt(3)*rho_abs[...,1] + rho_abs[...,0]) *
-                                (2. >= np.sqrt(3)                + rho_abs[...,2])).astype(bool)
-            if self.family == 'tetragonal':
-                return (np.prod(1.  >= rho_abs[...,:2],axis=-1) *
-                        (np.sqrt(2) >= rho_abs[...,0] + rho_abs[...,1]) *
-                        (np.sqrt(2) >= rho_abs[...,2] + 1.)).astype(bool)
-            if self.family == 'orthorhombic':
-                return (np.prod(1. >= rho_abs,axis=-1)).astype(bool)
-            if self.family == 'monoclinic':
-                return np.logical_or(   1. >= rho_abs[...,1],
-                                     np.isnan(rho_abs[...,1]))
-            if self.family == 'triclinic':
-                return np.ones(rho_abs.shape[:-1]).astype(bool)
-
-            raise TypeError(f'unknown symmetry "{self.family}"')
+            match self.family:
+                case 'cubic':
+                    return (np.prod(np.sqrt(2)-1. >= rho_abs,axis=-1) *
+                                       (1. >= np.sum(rho_abs,axis=-1))).astype(bool)
+                case 'hexagonal':
+                    return (np.prod(1.  >= rho_abs,axis=-1) *
+                                    (2. >= np.sqrt(3)*rho_abs[...,0] + rho_abs[...,1]) *
+                                    (2. >= np.sqrt(3)*rho_abs[...,1] + rho_abs[...,0]) *
+                                    (2. >= np.sqrt(3)                + rho_abs[...,2])).astype(bool)
+                case 'tetragonal':
+                    return (np.prod(1.  >= rho_abs[...,:2],axis=-1) *
+                            (np.sqrt(2) >= rho_abs[...,0] + rho_abs[...,1]) *
+                            (np.sqrt(2) >= rho_abs[...,2] + 1.)).astype(bool)
+                case 'orthorhombic':
+                    return (np.prod(1. >= rho_abs,axis=-1)).astype(bool)
+                case 'monoclinic':
+                    return np.logical_or(   1. >= rho_abs[...,1],
+                                         np.isnan(rho_abs[...,1]))
+                case 'triclinic':
+                    return np.ones(rho_abs.shape[:-1]).astype(bool)
 
 
     @property
-    def in_disorientation_FZ(self) -> np.ndarray:
+    def in_disorientation_FZ(self) -> npt.NDArray[np.bool_]:
         """
         Check whether orientation falls into fundamental zone of disorientations.
 
@@ -1148,13 +1166,20 @@ class Orientation(Rotation,Crystal):
                     (np.isclose(c[2],v[...,2]) | (v[...,2] > c[2]))).astype(bool)
 
         rho = self.as_Rodrigues_vector(compact=True)
-        return larger_or_equal(rho,
-                                     [rho[...,1],           rho[...,2],0] if self.family == 'cubic'
-                                else [rho[...,1]*np.sqrt(3),0,         0] if self.family == 'hexagonal'
-                                else [rho[...,1],           0,         0] if self.family == 'tetragonal'
-                                else [0,                    0,         0] if self.family == 'orthorhombic'
-                                else [-np.inf,              0,         0] if self.family == 'monoclinic'
-                                else [-np.inf,        -np.inf,   -np.inf]) & self.in_FZ
+        match self.family:
+            case 'cubic':
+                c = [rho[...,1],            rho[...,2], 0]
+            case 'hexagonal':
+                c = [rho[...,1]*np.sqrt(3), 0,          0]
+            case 'tetragonal':
+                c = [rho[...,1],            0,          0]
+            case 'orthorhombic':
+                c = [0,                     0,          0]
+            case 'monoclinic':
+                c = [-np.inf,               0,          0]
+            case 'triclinic':
+                c = [-np.inf,              -np.inf,    -np.inf]
+        return larger_or_equal(rho, c) & self.in_FZ
 
 
     @overload
@@ -1167,7 +1192,7 @@ class Orientation(Rotation,Crystal):
         ...
     def disorientation(self: MyType,
                        other: MyType,
-                       return_operators: bool = False) -> Union[MyType, DisorientationTuple]:
+                       return_operators: bool = False) -> MyType |  DisorientationTuple:
         """
         Calculate disorientation between self and given other orientation.
 
@@ -1252,7 +1277,7 @@ class Orientation(Rotation,Crystal):
 
 
     def disorientation_angle(self: MyType,
-                             other: MyType) -> np.ndarray:
+                             other: MyType) -> npt.NDArray[np.floating]:
         """
         Calculate disorientation angle between self and given other orientation.
 
@@ -1264,7 +1289,7 @@ class Orientation(Rotation,Crystal):
 
         Returns
         -------
-        omega : np.ndarray
+        omega : npt.NDArray[np.floating]
             Disorientation angle.
 
         Notes
@@ -1277,67 +1302,68 @@ class Orientation(Rotation,Crystal):
         """
         q_abs = np.abs((self*~other).quaternion)
 
-        if   'triclinic' == other.family == self.family:
-            trace_max = q_abs[...,0:1]
-
-        elif 'monoclinic' == other.family == self.family:
-            trace_max = np.maximum(q_abs[...,0:1],
-                                   q_abs[...,2:3])
-
-        elif 'orthorhombic' == other.family == self.family:
-            trace_max = np.maximum.reduce([q_abs[...,0:1],
-                                           q_abs[...,1:2],
-                                           q_abs[...,2:3],
-                                           q_abs[...,3:4]])
-
-        elif 'tetragonal' == other.family == self.family:
-            m1,m2,m3,m4 = np.split(q_abs,4,axis=-1)
-
-            trace_max = np.maximum.reduce([m1,m2,m3,m4,
-                                           (m1+m4)*np.sqrt(2.)/2.,
-                                           (m2+m3)*np.sqrt(2.)/2.])
-
-        elif 'hexagonal' == other.family == self.family:
-            m1,m2,m3,m4 = np.split(q_abs,4,axis=-1)
-
-            mask = m1 < m4
-            m1[mask],m4[mask] = m4[mask],m1[mask]
-            mask = m2 < m3
-            m2[mask],m3[mask] = m3[mask],m2[mask]
-
-            trace_max = np.maximum.reduce([m1,m2,
-                                           m1*np.sqrt(3.)/2.+m4*.5,
-                                           m2*np.sqrt(3.)/2.+m3*.5])
-
-        elif 'cubic' == other.family == self.family:
-            m1,m2,m3,m4 = np.split(q_abs,4,axis=-1)
-
-            trace_max = np.sum(q_abs,axis=-1,keepdims=True)*.5
-
-            mask = m1 < m2
-            m1[mask],m2[mask] = m2[mask],m1[mask]
-            mask = m3 < m4
-            m3[mask],m4[mask] = m4[mask],m3[mask]
-
-            mask1 = m1 > m3
-            mask2 = np.logical_and(mask1,m2<m3)
-            mask3 = np.logical_not(mask1)
-
-            m2[mask2] = m3[mask2]
-            m2[mask3] = np.where(m4[mask3]<m1[mask3],m1[mask3],m4[mask3])
-            m1[mask3] = m3[mask3]
-
-            trace_max = np.maximum.reduce([trace_max,m1,(m1+m2)*np.sqrt(2.)/2.])
-
-        else:
+        if self.family != other.family:
             return self.disorientation(other).as_axis_angle(pair=True)[1]
+
+        match self.family:
+            case 'cubic':
+                m1,m2,m3,m4 = np.split(q_abs,4,axis=-1)
+
+                trace_max = np.sum(q_abs,axis=-1,keepdims=True)*.5
+
+                mask = m1 < m2
+                m1[mask],m2[mask] = m2[mask],m1[mask]
+                mask = m3 < m4
+                m3[mask],m4[mask] = m4[mask],m3[mask]
+
+                mask1 = m1 > m3
+                mask2 = np.logical_and(mask1,m2<m3)
+                mask3 = np.logical_not(mask1)
+
+                m2[mask2] = m3[mask2]
+                m2[mask3] = np.where(m4[mask3]<m1[mask3],m1[mask3],m4[mask3])
+                m1[mask3] = m3[mask3]
+
+                trace_max = np.maximum.reduce([trace_max,m1,(m1+m2)*np.sqrt(2.)/2.])
+
+            case 'hexagonal':
+                m1,m2,m3,m4 = np.split(q_abs,4,axis=-1)
+
+                mask = m1 < m4
+                m1[mask],m4[mask] = m4[mask],m1[mask]
+                mask = m2 < m3
+                m2[mask],m3[mask] = m3[mask],m2[mask]
+
+                trace_max = np.maximum.reduce([m1,m2,
+                                               m1*np.sqrt(3.)/2.+m4*.5,
+                                               m2*np.sqrt(3.)/2.+m3*.5])
+
+            case 'tetragonal':
+                m1,m2,m3,m4 = np.split(q_abs,4,axis=-1)
+
+                trace_max = np.maximum.reduce([m1,m2,m3,m4,
+                                               (m1+m4)*np.sqrt(2.)/2.,
+                                               (m2+m3)*np.sqrt(2.)/2.])
+
+            case 'orthorhombic':
+                trace_max = np.maximum.reduce([q_abs[...,0:1],
+                                               q_abs[...,1:2],
+                                               q_abs[...,2:3],
+                                               q_abs[...,3:4]])
+
+            case 'monoclinic':
+                trace_max = np.maximum(q_abs[...,0:1],
+                                       q_abs[...,2:3])
+
+            case 'triclinic':
+                trace_max = q_abs[...,0:1]
 
         return 2.*np.arccos(np.clip(trace_max[...,0].round(15),None,1.))
 
 
     def average(self: MyType,                                                                       # type: ignore[override]
-                weights: Optional[FloatSequence] = None,
-                return_cloud: Optional[bool] = False) -> Union[MyType, AverageTuple]:
+                weights: FloatSequence | None = None,
+                return_cloud: bool | None = False) -> MyType |  AverageTuple:
         """
         Return orientation average over last dimension.
 
@@ -1378,7 +1404,7 @@ class Orientation(Rotation,Crystal):
     @overload
     def to_SST(self, vector: FloatSequence, proper: bool = False,
                return_operator: Literal[False] = False,
-               return_operators: bool = False) -> np.ndarray:
+               return_operators: bool = False) -> npt.NDArray[np.floating]:
         ...
     @overload
     def to_SST(self, vector: FloatSequence, proper: bool = False,
@@ -1389,7 +1415,7 @@ class Orientation(Rotation,Crystal):
                vector: FloatSequence,
                proper: bool = False,
                return_operator: bool = False,
-               return_operators: bool = False) -> Union[np.ndarray, ToSSTTuple]:
+               return_operators: bool = False) -> npt.NDArray[np.floating] | ToSSTTuple:
         """
         Rotate lab frame vector to ensure it falls into (improper or proper) standard stereographic triangle of crystal symmetry.
 
@@ -1414,7 +1440,8 @@ class Orientation(Rotation,Crystal):
             Index of the symmetrically equivalent orientation that rotated vector to SST.
         """
         if return_operators:
-            warnings.warn('"return_operators" is deprecated, use "return_operator".',DeprecationWarning,stacklevel=2)
+            warnings.warn('"return_operators" is deprecated, use "return_operator"',
+                          DeprecationWarning,stacklevel=2)
         vector_ = np.array(vector,float)
         if vector_.shape[-1] != 3:
             raise ValueError('input is not a field of three-dimensional vectors')
@@ -1435,7 +1462,7 @@ class Orientation(Rotation,Crystal):
 
     def in_SST(self,
                vector: FloatSequence,
-               proper: bool = False) -> Union[np.bool_, np.ndarray]:
+               proper: bool = False) -> np.bool_ | npt.NDArray[np.bool_]:
         """
         Check whether given crystal frame vector falls into standard stereographic triangle of own symmetry.
 
@@ -1479,7 +1506,7 @@ class Orientation(Rotation,Crystal):
     def IPF_color(self,
                   vector: FloatSequence,
                   in_SST: bool = True,
-                  proper: bool = False) -> np.ndarray:
+                  proper: bool = False) -> npt.NDArray[np.floating]:
         """
         Map lab frame vector to RGB color within standard stereographic triangle of own symmetry.
 
@@ -1528,7 +1555,7 @@ class Orientation(Rotation,Crystal):
         if np.array(vector).shape[-1] != 3:
             raise ValueError('input is not a field of three-dimensional vectors')
 
-        vector_:np.ndarray = self.to_SST(vector,proper) if in_SST else \
+        vector_:npt.NDArray[np.floating] = self.to_SST(vector,proper) if in_SST else \
                              self @ np.broadcast_to(vector,self.shape+(3,))
 
         if self.standard_triangle is None:                                                          # direct exit for no symmetry
@@ -1565,8 +1592,8 @@ class Orientation(Rotation,Crystal):
     # functions that require lattice, not just family
 
     def to_lattice(self, *,
-                   direction: Optional[FloatSequence] = None,
-                   plane: Optional[FloatSequence] = None) -> np.ndarray:                            # numpydoc ignore=PR01,PR02
+                   direction: FloatSequence | None = None,
+                   plane: FloatSequence | None = None) -> npt.NDArray[np.floating]:                 # numpydoc ignore=PR01,PR02
         """
         Calculate lattice vector corresponding to lab frame direction or plane normal.
 
@@ -1602,20 +1629,20 @@ class Orientation(Rotation,Crystal):
         >>> damask.util.scale_to_coprime(tetragonal.to_lattice(plane=[1,1,1]))
         array([2, 2, 1])
         """
-        if (direction is not None) ^ (plane is None):
-            raise KeyError('specify either "direction" or "plane"')
+        if (direction is None) == (plane is None):
+            raise TypeError('specify either "direction" or "plane"')
         return (super().to_lattice(direction=self@np.asarray(direction)) if plane is None else
                 super().to_lattice(plane=self@np.asarray(plane)))
 
 
     def to_frame(self, *,
-                 uvw: Optional[IntSequence] = None,
-                 hkl: Optional[IntSequence] = None,
-                 uvtw: Optional[IntSequence] = None,
-                 hkil: Optional[IntSequence] = None,
+                 uvw: IntSequence | None = None,
+                 hkl: IntSequence | None = None,
+                 uvtw: IntSequence | None = None,
+                 hkil: IntSequence | None = None,
                  with_symmetry: bool = False,
                  normalize: bool = True,
-                 ) -> np.ndarray:                                                                   # numpydoc ignore=PR01,PR02
+                 ) -> npt.NDArray[np.floating]:                                                     # numpydoc ignore=PR01,PR02
         """
         Calculate lab frame vector along lattice direction [uvw]/[uvtw] or plane normal (hkl)/(hkil).
 
@@ -1656,8 +1683,8 @@ class Orientation(Rotation,Crystal):
 
 
     def Schmid(self, *,
-               N_slip: Optional[Union[IntSequence, Literal['*']]] = None,
-               N_twin: Optional[Union[IntSequence, Literal['*']]] = None) -> np.ndarray:            # numpydoc ignore=PR01,PR02
+               N_slip: IntSequence | Literal['*'] | None = None,
+               N_twin: IntSequence | Literal['*'] | None = None) -> npt.NDArray[np.floating]:       # numpydoc ignore=PR01,PR02
         u"""
         Calculate Schmid matrix P = d ⨂ n in the lab frame for selected deformation systems.
 
@@ -1669,7 +1696,7 @@ class Orientation(Rotation,Crystal):
 
         Returns
         -------
-        P : numpy.ndarray, shape (N,...,3,3)
+        P : numpy.ndarray, shape (N,self.shape,3,3)
             Schmid matrix for each of the N deformation systems.
 
         Examples
@@ -1682,8 +1709,8 @@ class Orientation(Rotation,Crystal):
         >>> O = damask.Orientation.from_Euler_angles(phi=[0,45,0],degrees=True,lattice='cF')
         >>> np.round(O.Schmid(N_slip=[12])[0],3)
         array([[ 0.   ,  0.   ,  0.   ],
-               [ 0.577, -0.   ,  0.816],
-               [ 0.   ,  0.   ,  0.   ]])
+               [ 0.577,  0.   ,  0.816],
+               [-0.   , -0.   , -0.   ]])
 
         Schmid matrix (in lab frame) of first {110}, {112}, and {123} slip systems of
         a body-centered cubic crystal in "rotated cube" orientation.
@@ -1725,7 +1752,7 @@ class Orientation(Rotation,Crystal):
         """
         return np.moveaxis(~self @
                            super().Schmid(N_slip=N_slip,
-                                          N_twin=N_twin)[(np.newaxis,)*len(self.shape)],
+                                          N_twin=N_twin)[(np.newaxis,)*self.ndim],
                            -3,
                            0)
 
@@ -1779,3 +1806,31 @@ class Orientation(Rotation,Crystal):
                            beta =target.beta,
                            gamma=target.gamma,
                            )
+
+
+    def resolved_shear_stress(self, sigma: npt.NDArray[np.floating], *,
+                              N_slip: IntSequence | Literal['*'] | None = None,
+                              N_twin: IntSequence | Literal['*'] | None = None) -> npt.NDArray[np.floating]: # numpydoc ignore=PR01,PR02
+        """
+        Calculate resolved shear stress on slip or twin systems.
+
+        Parameters
+        ----------
+        N_slip|N_twin : '*' or sequence of int
+            Number of deformation systems per family of the deformation system.
+            Use '*' to select all.
+        sigma : numpy.ndarray, shape (...,3,3)
+            Cauchy stress.
+            Shape of vector blends with shape of own rotation array.
+            For example, a rotation array of shape (3,2) and a stress array of shape (2,4) result in (3,2,4) outputs.
+
+        Returns
+        -------
+        tau : numpy.ndarray, shape (N,...)
+            Resolved shear stress for each of the N deformation systems.
+
+        """
+        blend = util.shapeblender(self.shape,sigma.shape[:-2])
+        return np.einsum('...jk,...jk',
+                         self.broadcast_to(blend).Schmid(N_slip=N_slip,N_twin=N_twin),
+                         np.broadcast_to(sigma,blend+sigma.shape[-2:]))

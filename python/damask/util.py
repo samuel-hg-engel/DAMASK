@@ -1,33 +1,40 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 """Miscellaneous helper functionality."""
 
-import sys as _sys
-import datetime as _datetime
-import os as _os
-import subprocess as _subprocess
-import shlex as _shlex
-import re as _re
-import signal as _signal
-import fractions as _fractions
 import contextlib as _contextlib
-from collections import abc as _abc, defaultdict as _defaultdict
-from functools import reduce as _reduce, partial as _partial
-from pathlib import Path as _Path
+import datetime as _datetime
+import fractions as _fractions
 import logging as _logging
-from typing import Optional as _Optional, Union as _Union, Iterable as _Iterable, \
-                   Literal as _Literal, NamedTuple as _NamedTuple, \
-                   Any as _Any, TextIO as _TextIO, Generator as _Generator
+import os as _os
+import re as _re
+import shlex as _shlex
+import signal as _signal
+import subprocess as _subprocess
+import sys as _sys
+from os import PathLike as _PathLike
+from collections import abc as _abc
+from collections import defaultdict as _defaultdict
+from functools import partial as _partial
+from functools import reduce as _reduce
+from pathlib import Path as _Path
+from typing import Any as _Any
+from typing import Generator as _Generator
+from typing import Iterable as _Iterable
+from typing import Literal as _Literal
+from typing import NamedTuple as _NamedTuple
+from typing import TextIO as _TextIO
 
-import numpy as _np
 import h5py as _h5py
-try:
-    import numba as _nb                                                                             # type: ignore[import-not-found]
-except ImportError:
-    _nb = False
+import numpy as _np
+from numpy import typing as _npt
 
 from . import version as _version
-from ._typehints import FloatSequence as _FloatSequence, IntSequence as _IntSequence, \
-                        NumpyRngSeed as _NumpyRngSeed, FileHandle as _FileHandle
+from ._typehints import FileHandleText as _FileHandleText
+from ._typehints import FloatSequence as _FloatSequence
+from ._typehints import IntSequence as _IntSequence
+from ._typehints import RNGLike as _RNGLike
+from ._typehints import SeedLike as _SeedLike
+
 
 class stdioTuple(_NamedTuple):
     stdout: str
@@ -41,21 +48,21 @@ version = _np.lib.NumpyVersion
 # https://svn.blender.org/svnroot/bf-blender/trunk/blender/build_files/scons/tools/bcolors.py
 # https://stackoverflow.com/questions/287871
 if 'NO_COLOR' not in _os.environ:
-   _formats = _defaultdict(str,
-              {
-               'header' :    '\033[95m',
-               'OK_blue':    '\033[94m',
-               'OK_green':   '\033[92m',
-               'warning':    '\033[93m',
-               'fail':       '\033[91m',
-               'bold':       '\033[1m',
-               'dim':        '\033[2m',
-               'underline':  '\033[4m',
-               'crossout':   '\033[9m',
-               'end_format': '\033[0m'
-              })
+    _formats = _defaultdict(str,
+               {
+                'header' :    '\033[95m',
+                'OK_blue':    '\033[94m',
+                'OK_green':   '\033[92m',
+                'warning':    '\033[93m',
+                'fail':       '\033[91m',
+                'bold':       '\033[1m',
+                'dim':        '\033[2m',
+                'underline':  '\033[4m',
+                'crossout':   '\033[9m',
+                'end_format': '\033[0m'
+               })
 else:
-   _formats = _defaultdict(str)
+    _formats = _defaultdict(str)
 
 ####################################################################################################
 # Functions
@@ -156,8 +163,8 @@ def strikeout(msg) -> str:
 
 def run(cmd: str,
         wd: str = './',
-        env: _Optional[dict[str, str]] = None,
-        timeout: _Optional[int] = None) -> stdioTuple:
+        env: dict[str, str] | None = None,
+        timeout: int | None = None) -> stdioTuple:
     """
     Run a command.
 
@@ -176,6 +183,11 @@ def run(cmd: str,
     -------
     stdout, stderr : (str, str)
         Output of the executed command.
+
+    Raises
+    ------
+    RuntimeError
+        If the command exits with a non-zero return code.
     """
     def pass_signal(sig,_,proc,default):
         proc.send_signal(sig)
@@ -209,7 +221,7 @@ def run(cmd: str,
 
 
 @_contextlib.contextmanager
-def open_text(fname: _FileHandle,
+def open_text(fname: _FileHandleText,
               mode: _Literal['r','w'] = 'r') -> _Generator[_TextIO, None, None]:                    # noqa
     """
     Open a text file with Unix line endings.
@@ -230,7 +242,7 @@ def open_text(fname: _FileHandle,
     f : file handle
         File handle for a text file.
     """
-    if isinstance(fname, (str,_Path)):
+    if isinstance(fname, (str,_PathLike)):
         fhandle = open(_Path(fname).expanduser(),mode,newline=('\n' if mode == 'w' else None))
         yield fhandle
         fhandle.close()
@@ -250,7 +262,7 @@ def time_stamp() -> str:
     return _datetime.datetime.now().astimezone().strftime('%Y-%m-%d %H:%M:%S%z')
 
 def execution_stamp(class_name: str,
-                    function_name: _Optional[str] = None) -> str:
+                    function_name: str | None = None) -> str:
     """
     Timestamp the execution of a (function within a) class.
 
@@ -262,7 +274,7 @@ def execution_stamp(class_name: str,
     return f'damask.{class_name}{_function_name} v{_version} ({time_stamp()})'
 
 
-def natural_sort(key: str) -> list[_Union[int, str]]:
+def natural_sort(key: str) -> list[int | str]:
     """
     Natural sort.
 
@@ -276,7 +288,7 @@ def natural_sort(key: str) -> list[_Union[int, str]]:
 
 
 def show_progress(iterable: _Iterable,
-                  N_iter: _Optional[int] = None,
+                  N_iter: int | None = None,
                   prefix: str = '',
                   bar_length: int = 50) -> _Any:
     """
@@ -317,7 +329,7 @@ def show_progress(iterable: _Iterable,
 
 
 def scale_to_coprime(v: _FloatSequence,
-                     N_significant: int = 9) -> _np.ndarray:
+                     N_significant: int = 9) -> _npt.NDArray[_np.integer]:
     """
     Scale vector to co-prime (relatively prime) integers.
 
@@ -356,10 +368,10 @@ def scale_to_coprime(v: _FloatSequence,
     return m
 
 
-def project_equal_angle(vector: _np.ndarray,
+def project_equal_angle(vector: _npt.NDArray[_np.floating],
                         direction: _Literal['x', 'y', 'z'] = 'z',                                   # noqa
                         normalize: bool = True,
-                        keepdims: bool = False) -> _np.ndarray:
+                        keepdims: bool = False) -> _npt.NDArray[_np.floating]:
     """
     Apply equal-angle projection to vector.
 
@@ -403,10 +415,10 @@ def project_equal_angle(vector: _np.ndarray,
     return _np.roll(_np.block([v[...,:2]/(1.0+_np.abs(v[...,2:3])),_np.zeros_like(v[...,2:3])]),
                     -shift if keepdims else 0,axis=-1)[...,:3 if keepdims else 2]
 
-def project_equal_area(vector: _np.ndarray,
+def project_equal_area(vector: _npt.NDArray[_np.floating],
                        direction: _Literal['x', 'y', 'z'] = 'z',                                    # noqa
                        normalize: bool = True,
-                       keepdims: bool = False) -> _np.ndarray:
+                       keepdims: bool = False) -> _npt.NDArray[_np.floating]:
     """
     Apply equal-area projection to vector.
 
@@ -453,7 +465,7 @@ def project_equal_area(vector: _np.ndarray,
 
 def hybrid_IA(dist: _FloatSequence,
               N: int,
-              rng_seed: _Optional[_NumpyRngSeed] = None) -> _np.ndarray:
+              rng: _RNGLike | _SeedLike | None = None) -> _npt.NDArray[_np.integer]:
     """
     Hybrid integer approximation.
 
@@ -463,9 +475,11 @@ def hybrid_IA(dist: _FloatSequence,
         Distribution to be approximated.
     N : int
         Number of samples to draw.
-    rng_seed : {None, int, array_like[ints], SeedSequence, BitGenerator, Generator}, optional
-        A seed to initialize the BitGenerator. Defaults to None.
-        If None, then fresh, unpredictable entropy will be pulled from the OS.
+    rng : numpy.random.Generator, optional
+        Pseudorandom number generator state. When rng is None, a new
+        numpy.random.Generator is created using entropy from the operating
+        system. Types other than numpy.random.Generator are passed to
+        numpy.random.default_rng to instantiate a ``Generator``.
 
     Returns
     -------
@@ -483,7 +497,7 @@ def hybrid_IA(dist: _FloatSequence,
                                    if N_inv_samples < N_opt_samples else \
                                   (scale_,0.5*(scale_ + scale), 1.0)
 
-    return _np.repeat(_np.arange(len(dist)),repeats)[_np.random.default_rng(rng_seed).permutation(N_inv_samples)[:N]]
+    return _np.repeat(_np.arange(len(dist)),repeats)[_np.random.default_rng(rng).permutation(N_inv_samples)[:N]]
 
 
 def shapeshifter(fro: tuple[int, ...],
@@ -601,9 +615,10 @@ def shapeblender(a: tuple[int, ...],
         return _np.broadcast_shapes(a_,_b)
 
 
-def DREAM3D_base_group(fname: _Union[str, _Path, _h5py.File]) -> str:
+def DREAM3D_base_group(fname: str | _PathLike | _h5py.File,
+                       file_version: _Literal['7.0', '8.0']) -> str:
     """
-    Determine the base group of a DREAM.3D file.
+    Determine the base group of a DREAM3D file.
 
     The base group is defined as the group (folder) that contains
     a 'SPACING' dataset in a '_SIMPL_GEOMETRY' group.
@@ -611,28 +626,34 @@ def DREAM3D_base_group(fname: _Union[str, _Path, _h5py.File]) -> str:
     Parameters
     ----------
     fname : str, pathlib.Path, or _h5py.File
-        Filename of the DREAM.3D (HDF5) file.
+        Filename of the DREAM3D (HDF5) file.
 
     Returns
     -------
     path : str
         Path to the base group.
     """
-    def get_base_group(f: _h5py.File) -> str:
-        base_group = f.visit(lambda path: path.rsplit('/',2)[0] if '_SIMPL_GEOMETRY/SPACING' in path else None)
+    def get_base_group(f: _h5py.File, version: _Literal['7.0', '8.0']) -> str:
+        match version:
+            case '8.0':
+                base_group = f.visit(lambda path: path if '_SPACING' in f[path].attrs else None)
+            case '7.0':
+                base_group = f.visit(lambda path: path.rsplit('/',2)[0] if '_SIMPL_GEOMETRY/SPACING' in path else None)
+
         if base_group is None:
             raise ValueError(f'could not determine base group in file "{fname}"')
         return base_group
 
     if isinstance(fname,_h5py.File):
-        return get_base_group(fname)
+        return get_base_group(fname, file_version)
 
     with _h5py.File(_Path(fname).expanduser(),'r') as f:
-        return get_base_group(f)
+        return get_base_group(f, file_version)
 
-def DREAM3D_cell_data_group(fname: _Union[str, _Path, _h5py.File]) -> str:
+def DREAM3D_cell_data_group(fname: str | _PathLike | _h5py.File,
+                            file_version: _Literal['7.0', '8.0']) -> str:
     """
-    Determine the cell data group of a DREAM.3D file.
+    Determine the cell data group of a DREAM3D file.
 
     The cell data group is defined as the group (folder) that contains
     a dataset in the base group whose length matches the total number
@@ -641,16 +662,20 @@ def DREAM3D_cell_data_group(fname: _Union[str, _Path, _h5py.File]) -> str:
     Parameters
     ----------
     fname : str, pathlib.Path, or h5py.File
-        Filename of the DREAM.3D (HDF5) file.
+        Filename of the DREAM3D (HDF5) file.
 
     Returns
     -------
     path : str
         Path to the cell data group.
     """
-    def get_cell_data_group(f: _h5py.File) -> str:
-        base_group = DREAM3D_base_group(f)
-        cells = tuple(f['/'.join([base_group,'_SIMPL_GEOMETRY','DIMENSIONS'])][()][::-1])
+    def get_cell_data_group(f: _h5py.File, version: _Literal['7.0', '8.0']) -> str:
+        base_group = DREAM3D_base_group(f,version)
+        match version:
+            case '8.0':
+                cells = tuple(f[base_group].attrs['_DIMENSIONS'][::-1])
+            case '7.0':
+                cells = tuple(f['/'.join([base_group,'_SIMPL_GEOMETRY','DIMENSIONS'])][()][::-1])
         cell_data_group = f[base_group].visititems(lambda path,obj: path.split('/')[0] \
                                                    if isinstance(obj,_h5py._hl.dataset.Dataset) and _np.shape(obj)[:-1] == cells \
                                                    else None)
@@ -659,13 +684,13 @@ def DREAM3D_cell_data_group(fname: _Union[str, _Path, _h5py.File]) -> str:
         return cell_data_group
 
     if isinstance(fname,_h5py.File):
-        return get_cell_data_group(fname)
+        return get_cell_data_group(fname, file_version)
 
     with _h5py.File(_Path(fname).expanduser(),'r') as f:
-        return get_cell_data_group(f)
+        return get_cell_data_group(f, file_version)
 
 
-def _standardize_MillerBravais(idx: _IntSequence) -> _np.ndarray:
+def _standardize_MillerBravais(idx: _IntSequence) -> _npt.NDArray[_np.integer]:
     """
     Convert Miller-Bravais indices with missing component to standard (full) form.
 
@@ -680,7 +705,7 @@ def _standardize_MillerBravais(idx: _IntSequence) -> _np.ndarray:
     uvtw|hkil : numpy.ndarray, shape (...,4)
         Miller-Bravais indices of [uvtw] direction or (hkil) plane normal.
     """
-    def expand(v: _np.ndarray) -> _np.ndarray:
+    def expand(v: _npt.NDArray[_np.integer]) -> _npt.NDArray[_np.integer]:
         """Expand from 3 to 4 indices."""
         return _np.block([v[...,:2], -_np.sum(v[...,:2],axis=-1,keepdims=True), v[...,2:]])
 
@@ -708,8 +733,8 @@ def _standardize_MillerBravais(idx: _IntSequence) -> _np.ndarray:
 
 
 def Bravais_to_Miller(*,
-                      uvtw: _Optional[_IntSequence] = None,
-                      hkil: _Optional[_IntSequence] = None) -> _np.ndarray:                         # numpydoc ignore=PR01,PR02
+                      uvtw: _IntSequence | None = None,
+                      hkil: _IntSequence | None = None) -> _npt.NDArray[_np.integer]:               # numpydoc ignore=PR01,PR02
     """
     Transform 4 Miller–Bravais indices to 3 Miller indices of crystal direction [uvw] or plane normal (hkl).
 
@@ -724,8 +749,8 @@ def Bravais_to_Miller(*,
     uvw|hkl : numpy.ndarray, shape (...,3)
         Miller indices of [uvw] direction or (hkl) plane normal.
     """
-    if (uvtw is not None) ^ (hkil is None):
-        raise KeyError('specify either "uvtw" or "hkil"')
+    if (uvtw is None) == (hkil is None):
+        raise TypeError('specify either "uvtw" or "hkil"')
     elif uvtw is not None:
         axis,basis = _standardize_MillerBravais(uvtw),_np.array([[2,1,0,0],
                                                                  [1,2,0,0],
@@ -743,8 +768,8 @@ MillerBravais_to_Miller = Bravais_to_Miller
 
 
 def Miller_to_Bravais(*,
-                      uvw: _Optional[_IntSequence] = None,
-                      hkl: _Optional[_IntSequence] = None) -> _np.ndarray:                          # numpydoc ignore=PR01,PR02
+                      uvw: _IntSequence | None = None,
+                      hkl: _IntSequence | None = None) -> _npt.NDArray[_np.integer]:                # numpydoc ignore=PR01,PR02
     """
     Transform 3 Miller indices to 4 Miller–Bravais indices of crystal direction [uvtw] or plane normal (hkil).
 
@@ -758,8 +783,8 @@ def Miller_to_Bravais(*,
     uvtw|hkil : numpy.ndarray, shape (...,4)
         Miller–Bravais indices of [uvtw] direction or (hkil) plane normal.
     """
-    if (uvw is not None) ^ (hkl is None):
-        raise KeyError('specify either "uvw" or "hkl"')
+    if (uvw is None) == (hkl is None):
+        raise TypeError('specify either "uvw" or "hkl"')
     axis,basis = (_np.asarray(uvw),_np.array([[ 2,-1, 0],
                                               [-1, 2, 0],
                                               [-1,-1, 0],
@@ -798,7 +823,7 @@ def dict_prune(d: dict) -> dict:
     for k,v in d.items():
         if isinstance(v, dict):
             v = dict_prune(v)
-        if not isinstance(v,dict) or v != {}:
+        if not isinstance(v, dict) or v != {}:
             new[k] = v
 
     return new
@@ -817,9 +842,9 @@ def dict_flatten(d: dict) -> dict:
     flattened : dict
         Flattened dictionary.
     """
-    if isinstance(d,dict) and len(d) == 1:
+    if isinstance(d, dict) and len(d) == 1:
         entry = d[list(d.keys())[0]]
-        new = dict_flatten(entry.copy()) if isinstance(entry,dict) else entry
+        new = dict_flatten(entry.copy()) if isinstance(entry, dict) else entry
     else:
         new = {k: (dict_flatten(v) if isinstance(v, dict) else v) for k,v in d.items()}
 
@@ -843,28 +868,56 @@ def to_list(a: _Any) -> list:
     return [a] if not hasattr(a,'__iter__') or isinstance(a,str) else list(a)
 
 
-def numba_njit_wrapper(**kwargs):
+def get_value0(d: dict) -> _Any:
     """
-    Return a decorator that applies `numba.njit` if Numba is available.
-
-    This function serves as a compatibility wrapper around Numba's `njit`
-    decorator. If the global variable `nb` (typically an imported `numba` module)
-    is defined, it applies `nb.njit` to the decorated function. Otherwise, it
-    returns the function unchanged, allowing code to run even when Numba is not
-    installed.
+    Get first value from dictionary.
 
     Parameters
     ----------
-    **kwargs : dict
-        Currently unused, reserved for future compatibility or configuration
-        with `numba.njit`.
+    d : dict
+        Dictionary with at least one entry.
 
     Returns
     -------
-    callable
-        A decorator that conditionally applies `numba.njit` to a function.
+    value_0
+        First value from the dictionary.
     """
-    return (lambda function: _nb.njit(function) if _nb else function)
+    return next(iter(d.values()))
+
+
+def dict_equal(d1: dict, d2:dict) -> bool:
+    """
+    Check if two dictioaries are equal.
+
+    Default comparison fails for NumPy arrays.
+
+    Parameters
+    ----------
+    d1 : dict
+        Dictionary
+    d2: dict
+        Dictionary
+
+    Returns
+    -------
+    equal : bool
+        Whether keys and values of dictionaries are equal.
+
+    Notes
+    -----
+    Values of NumPy masked arrays at masked positions are
+    taken into account in the comparison.
+    """
+    if d1.keys() != d2.keys():
+        return False
+    for k in d1:
+        if type(d1[k]) is dict and type(d2[k]) is dict:
+            if not dict_equal(d1[k],d2[k]):
+                return False
+        else:
+            if not _np.array_equal(d1[k],d2[k]):
+                return False
+    return True
 
 
 ####################################################################################################
@@ -921,3 +974,17 @@ class ProgressBar:
 
         if iteration == self.total - 1 and _sys.stdout.isatty():
             _sys.stdout.write('\n')
+
+
+class NestedDefaultDict(_defaultdict):
+    """A dictionary that has itself as a default."""
+
+    def __init__(self, *args, **kwargs):
+        """New nested default dictionary."""
+        super(NestedDefaultDict, self).__init__(NestedDefaultDict, *args, **kwargs)
+
+    def to_regular(self) -> dict:
+        """Convert recursively to regular dictionary."""
+        def to_regular(nested: dict):
+            return {k : to_regular(v) if isinstance(v, dict) else v for k,v in nested.items()}
+        return to_regular(self)

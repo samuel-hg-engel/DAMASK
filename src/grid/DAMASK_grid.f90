@@ -3,6 +3,8 @@
 !> @author Pratheek Shanthraj, Max-Planck-Institut für Eisenforschung GmbH
 !> @author Martin Diehl, Max-Planck-Institut für Eisenforschung GmbH
 !> @author Philip Eisenlohr, Max-Planck-Institut für Eisenforschung GmbH
+!> @author Fotios Tsiolis, Max-Planck-Institut für Eisenforschung GmbH
+!> @author Tilak Raj Pant, Indian Institute of Science
 !> @brief Driver controlling inner and outer load case looping of the various spectral solvers
 !> @details doing cutbacking, forwarding in case of restart, reporting statistics, writing
 !> results
@@ -10,7 +12,7 @@
 #include <petsc/finclude/petscsys.h>
 program DAMASK_grid
   use PETScSys
-#ifndef PETSC_HAVE_MPI_F90MODULE_VISIBILITY
+#ifndef PETSC_EXPOSES_MPI
   use MPI_f08
 #endif
 
@@ -22,6 +24,7 @@ program DAMASK_grid
   use IO
   use config
   use math
+  use discretization_grid
   use materialpoint
   use material
   use spectral_utilities
@@ -33,9 +36,10 @@ program DAMASK_grid
   use grid_chemical_FDM
   use grid_damage_spectral
   use grid_thermal_spectral
+  use grid_electrical_spectral
   use result
 
-#ifndef PETSC_HAVE_MPI_F90MODULE_VISIBILITY
+#ifndef PETSC_EXPOSES_MPIF90
   implicit none(type,external)
 #else
   implicit none
@@ -43,8 +47,11 @@ program DAMASK_grid
 
   type :: tLoadCase
     type(tRotation)          :: rot                                                                 !< rotation of BC
-    type(tBoundaryCondition) :: stress, &                                                           !< stress BC
-                                deformation                                                         !< deformation BC (dot_F, F, or L)
+    type(tBCmech)            :: stress, &                                                           !< stress BC
+                                deformation                                                         !< deformation BC (F_dot, F, or L)
+    type(tBCthermal) ::         temperature                                                         !< thermal BC; unallocated = free
+    type(tBCelectrical)      :: electric_field, &                                                   !< E field BC (E)
+                                current_density                                                     !< current density BC (J)
     real(pREAL) ::              t, &                                                                !< length of increment
                                 r                                                                   !< ratio of geometric progression
     integer ::                  N, &                                                                !< number of increments
@@ -60,7 +67,8 @@ program DAMASK_grid
     FIELD_MECH_ID, &
     FIELD_THERMAL_ID, &
     FIELD_DAMAGE_ID, &
-    FIELD_CHEMICAL_ID
+    FIELD_CHEMICAL_ID, &
+    FIELD_ELECTRICAL_ID
   end enum
 
   integer(kind(FIELD_UNDEFINED_ID)), allocatable :: ID(:)
@@ -81,14 +89,13 @@ program DAMASK_grid
     cutBack = .false.,&
     sig
   integer :: &
-    i, j, field, &
-    errorID = 0, &
+    field, &
     cutBackLevel = 0, &                                                                             !< cut back level \f$ t = \frac{t_{inc}}{2^l} \f$
     stepFraction = 0, &                                                                             !< fraction of current time interval
     l = 0, &                                                                                        !< current load case
     inc, &                                                                                          !< current increment in current load case
     totalIncsCounter = 0, &                                                                         !< total # of increments
-    statUnit = 0, &                                                                                 !< file unit for statistics output
+    unit_stat = 0, &                                                                                !< file unit for statistics output
     stagIter, &
     nActiveFields = 0, &
     maxCutBack, &                                                                                   !< max number of cut backs
@@ -200,9 +207,10 @@ program DAMASK_grid
 
 !--------------------------------------------------------------------------------------------------
 ! initialize field solver information
-  if (solver%get_asStr('thermal',defaultVal = 'n/a') == 'spectral') nActiveFields = nActiveFields + 1
-  if (solver%get_asStr('damage', defaultVal = 'n/a') == 'spectral') nActiveFields = nActiveFields + 1
-  if (solver%get_asStr('chemical', defaultVal = 'n/a') == 'FDM')    nActiveFields = nActiveFields + 1
+  if (solver%get_asStr('thermal',defaultVal = 'n/a') == 'spectral')     nActiveFields = nActiveFields + 1
+  if (solver%get_asStr('damage', defaultVal = 'n/a') == 'spectral')     nActiveFields = nActiveFields + 1
+  if (solver%get_asStr('chemical', defaultVal = 'n/a') == 'FDM')        nActiveFields = nActiveFields + 1
+  if (solver%get_asStr('electrical', defaultVal = 'n/a') == 'spectral') nActiveFields = nActiveFields + 1
 
   allocate(solres(nActiveFields))
   allocate(    ID(nActiveFields))
@@ -224,6 +232,11 @@ program DAMASK_grid
     ID(field) = FIELD_CHEMICAL_ID
     active_parabolic = .true.
   end if chemicalActive
+  electricalActive: if (solver%get_asStr('electrical',defaultVal = 'n/a') == 'spectral') then
+    field = field + 1
+    ID(field) = FIELD_ELECTRICAL_ID
+    active_parabolic = .true.
+  end if electricalActive
 
 !--------------------------------------------------------------------------------------------------
 ! doing initialization depending on active solvers
@@ -235,6 +248,9 @@ program DAMASK_grid
       case (FIELD_THERMAL_ID)
         call grid_thermal_spectral_init(num_grid%get_dict('thermal',defaultVal=emptyDict))
 
+      case (FIELD_ELECTRICAL_ID)
+        call grid_electrical_spectral_init(num_grid)
+
       case (FIELD_DAMAGE_ID)
         call grid_damage_spectral_init(num_grid%get_dict('damage',defaultVal=emptyDict))
 
@@ -245,6 +261,7 @@ program DAMASK_grid
   end do
 
   call grid_mechanical_init(num_grid%get_dict('mechanical',defaultVal=emptyDict))
+  call discretization_grid_finalize()
   call config_numerics_deallocate()
 
 !--------------------------------------------------------------------------------------------------
@@ -252,21 +269,21 @@ program DAMASK_grid
   if (worldrank == 0) then
     fname = trim(CLI_jobName)//'.sta'
     inquire(file=fname,exist=exists)
-    writeHeader: if (CLI_restartInc < 1 .or. .not. exists) then
-      open(newunit=statUnit,file=fname,form='FORMATTED',status='REPLACE')
-      write(statUnit,'(a)') 'Increment Time CutbackLevel Converged IterationsNeeded StagIterationsNeeded'
+    writeHeader: if (CLI_restartInc == -1 .or. .not. exists) then
+      open(newunit=unit_stat,file=fname,form='FORMATTED',status='REPLACE')
+      write(unit_stat,'(a)') 'Increment Time CutbackLevel Converged IterationsNeeded StagIterationsNeeded'
     else writeHeader
-      open(newunit=statUnit,file=fname,form='FORMATTED', position='APPEND', status='OLD')
+      open(newunit=unit_stat,file=fname,form='FORMATTED', position='APPEND', status='OLD')
     end if writeHeader
   end if
 
-  writeUndeformed: if (CLI_restartInc < 1) then
+  writeUndeformed: if (CLI_restartInc == -1) then
     print'(/,1x,a)', '... saving initial configuration ..........................................'
     flush(IO_STDOUT)
     call materialpoint_result(0,0.0_pREAL)
   end if writeUndeformed
 
-  loadCases = parseLoadSteps(load%get_list('loadstep'))
+  loadCases = parse_and_print_load_cases(load%get_list('loadstep'), solver)
 
   loadCaseLooping: do l = 1, size(loadCases)
     t_0 = t                                                                                         ! load case start time
@@ -278,13 +295,8 @@ program DAMASK_grid
 !--------------------------------------------------------------------------------------------------
 ! forwarding time
       Delta_t_prev = Delta_t                                                                        ! last time intervall that brought former inc to an end
-      if (dEq(loadCases(l)%r,1.0_pREAL,1.e-9_pREAL)) then                                           ! linear scale
-        Delta_t = loadCases(l)%t/real(loadCases(l)%N,pREAL)
-      else
-        Delta_t = loadCases(l)%t * (loadCases(l)%r**(inc-1)-loadCases(l)%r**inc) &
-                                 / (1.0_pREAL-loadCases(l)%r**loadCases(l)%N)
-      end if
-      Delta_t = Delta_t * real(subStepFactor,pREAL)**real(-cutBackLevel,pREAL)                      ! depending on cut back level, decrease time step
+      Delta_t = loadCases(l)%t * math_geometricFraction(loadCases(l)%r,inc,loadCases(l)%N) &        ! geometric scaling
+              * real(subStepFactor,pREAL)**real(-cutBackLevel,pREAL)                                ! depending on cut back level, decrease time step
 
       skipping: if (totalIncsCounter <= CLI_restartInc) then                                        ! not yet at restart inc?
         t = t + Delta_t                                                                             ! just advance time, skip already performed calculation
@@ -320,8 +332,20 @@ program DAMASK_grid
                         deformation_BC = loadCases(l)%deformation, &
                         stress_BC      = loadCases(l)%stress, &
                         rotation_BC    = loadCases(l)%rot)
-
-              case(FIELD_THERMAL_ID); call grid_thermal_spectral_forward(cutBack, Delta_t)
+              case(FIELD_ELECTRICAL_ID)
+                call grid_electrical_spectral_forward( &
+                     cutBack, &
+                     Delta_t, &
+                     t_remaining, &
+                     electric_field_BC = loadCases(l)%electric_field, &
+                     current_density_BC = loadCases(l)%current_density )
+              case(FIELD_THERMAL_ID)
+                if (allocated(loadCases(l)%temperature%myType)) then
+                  call grid_thermal_spectral_forward(cutBack, guess, Delta_t, Delta_t_prev, t_remaining, &
+                                                     loadCases(l)%temperature)
+                else
+                  call grid_thermal_spectral_forward(cutBack, guess, Delta_t, Delta_t_prev, t_remaining)
+                end if
               case(FIELD_DAMAGE_ID); call grid_damage_spectral_forward(cutBack)
               case(FIELD_CHEMICAL_ID); call grid_chemical_FDM_forward(cutBack)
             end select
@@ -339,6 +363,8 @@ program DAMASK_grid
               select case(ID(field))
                 case(FIELD_MECH_ID)
                   solres(field) = grid_mechanical_solution(incInfo)
+                case(FIELD_ELECTRICAL_ID)
+                  solres(field) = grid_electrical_spectral_solution(incInfo)
                 case(FIELD_THERMAL_ID)
                   solres(field) = grid_thermal_spectral_solution(Delta_t)
                 case(FIELD_DAMAGE_ID)
@@ -365,9 +391,9 @@ program DAMASK_grid
             cutBack = .false.
             guess = .true.                                                                          ! start guessing after first converged (sub)inc
             if (worldrank == 0) then
-              write(statUnit,*) totalIncsCounter, t, cutBackLevel, &
+              write(unit_stat,*) totalIncsCounter, t, cutBackLevel, &
                                 solres(1)%converged, solres(1)%iterationsNeeded, StagIter - 1
-              flush(statUnit)
+              flush(unit_stat)
             end if
           elseif (cutBackLevel < maxCutBack) then                                                   ! further cutbacking tolerated?
             cutBack = .true.
@@ -377,7 +403,7 @@ program DAMASK_grid
             Delta_t = Delta_t/real(subStepFactor,pREAL)                                             ! cut timestep
             print'(/,1x,a)', 'cutting back '
           else                                                                                      ! no more options to continue
-            if (worldrank == 0) close(statUnit)
+            if (worldrank == 0) close(unit_stat)
             call IO_error(950)
           end if
 
@@ -410,10 +436,14 @@ program DAMASK_grid
             select case (ID(field))
               case(FIELD_MECH_ID)
                 call grid_mechanical_restartWrite()
+              case(FIELD_ELECTRICAL_ID)
+                call grid_electrical_spectral_restartWrite()
               case(FIELD_THERMAL_ID)
                 call grid_thermal_spectral_restartWrite()
               case(FIELD_DAMAGE_ID)
                 call grid_damage_spectral_restartWrite()
+              case(FIELD_CHEMICAL_ID)
+                call grid_chemical_FDM_restartWrite()
             end select
           end do
           call materialpoint_restartWrite()
@@ -429,22 +459,259 @@ program DAMASK_grid
 
   end do loadCaseLooping
 
-
 !--------------------------------------------------------------------------------------------------
 ! report summary of whole calculation
   print'(/,1x,a)', '###########################################################################'
-  if (worldrank == 0) close(statUnit)
+  if (worldrank == 0) close(unit_stat)
 
   call quit(0)                                                                                      ! no complains ;)
 
-
 contains
 
-subroutine getMaskedTensor(values,mask,tensor)
+
+function parse_and_print_load_cases(load_steps, solver) result(load_cases)
+
+#ifndef __GFORTRAN__
+  use prec
+  use types
+  use IO
+  use math
+  use parallelization
+
+  import, only: tLoadCase, get_masked_tensor, get_masked_vector
+#endif
+
+  type(tList), intent(in), target :: load_steps
+  type(tDict), pointer, intent(in) :: solver
+  type(tLoadCase), allocatable, dimension(:) :: load_cases                                          !< array of all load cases
+
+  integer :: i,j, l,m
+  type(tDict), pointer :: &
+    load_step, &
+    step_bc, &
+    step_mech, &
+    step_therm, &
+    step_electrical, &
+    step_discretization
+
+
+  allocate(load_cases(size(load_steps)))
+  do l = 1, size(load_steps)
+    load_step => load_steps%get_dict(l)
+    if (load_step%contains('boundary_condition')) then
+      step_bc => load_step%get_dict('boundary_condition')
+    else
+      step_bc => load_step%get_dict('boundary_conditions')
+      call IO_warning(10, 'boundary_conditions', 'is deprecated in favor of', 'boundary_condition',emph=[1,3])
+    end if
+
+    step_mech => step_bc%get_dict('mechanical')
+    load_cases(l)%stress%myType=''
+    readMech: do m = 1, size(step_mech)
+      select case (step_mech%key(m))
+        case ('L','dot_F','F_dot','F')                                                              ! assign values for the deformation BC matrix
+          if (allocated(load_cases(l)%deformation%myType)) &
+            call IO_error(830_pI16, 'load case', l, 'only one of L, F_dot, or F allowed in mechanical BC', emph=[2])
+          load_cases(l)%deformation%myType = step_mech%key(m)
+          if (load_cases(l)%deformation%myType == 'dot_F') then
+            call IO_warning(10, 'dot_F', 'is deprecated in favor of', 'F_dot',emph=[1,3])
+            load_cases(l)%deformation%myType = 'F_dot'
+          end if
+          call get_masked_tensor(load_cases(l)%deformation%values,load_cases(l)%deformation%mask,step_mech%get_list(m))
+        case ('dot_P','P','P_dot')
+          if (load_cases(l)%stress%myType /= '') &
+            call IO_error(830_pI16, 'load case', l, 'only one of P or P_dot allowed in mechanical BC', emph=[2])
+          load_cases(l)%stress%myType = step_mech%key(m)
+          if (load_cases(l)%stress%myType == 'dot_P') then
+            call IO_warning(10, 'dot_P', 'is deprecated in favor of', 'P_dot',emph=[1,3])
+            load_cases(l)%stress%myType = 'P_dot'
+          end if
+          call get_masked_tensor(load_cases(l)%stress%values,load_cases(l)%stress%mask,step_mech%get_list(m))
+      end select
+      call load_cases(l)%rot%fromAxisAngle(step_mech%get_as1dReal('R',defaultVal = real([0.0,0.0,1.0,0.0],pREAL)),degrees=.true.)
+    end do readMech
+    if (.not. allocated(load_cases(l)%deformation%myType)) &
+      call IO_error(830_pI16, 'load case', l, 'is incomplete: L, F_dot, or F missing', emph=[2])
+
+    if (step_bc%contains('electrical')) then
+      step_electrical => step_bc%get_dict('electrical')
+
+      load_cases(l)%electric_field%myType = 'E'
+      load_cases(l)%electric_field%values = 0.0_pREAL
+      load_cases(l)%electric_field%mask   = .true.
+
+      load_cases(l)%current_density%myType = 'J'
+      load_cases(l)%current_density%values = 0.0_pREAL
+      load_cases(l)%current_density%mask   = .true.
+
+      if (step_electrical%contains('E')) then
+        call get_masked_vector(load_cases(l)%electric_field%values, &
+                               load_cases(l)%electric_field%mask, &
+                               step_electrical%get_list('E'))
+      end if
+
+      if (step_electrical%contains('J')) then
+        call get_masked_vector(load_cases(l)%current_density%values, &
+                               load_cases(l)%current_density%mask, &
+                               step_electrical%get_list('J'))
+      end if
+
+      do i = 1,3
+        if (load_cases(l)%electric_field%mask(i) .eqv. load_cases(l)%current_density%mask(i)) &
+          call IO_error(830_pI16, 'mask consistency for electrical violated in load case', l, &
+                        'for component', i, emph=[2,4])
+      end do
+    end if
+
+    if (step_bc%contains('thermal')) then
+      step_therm => step_bc%get_dict('thermal')
+      readTherm: do m = 1, size(step_therm)
+        select case (step_therm%key(m))
+          case ('T','dot_T','T_dot')
+            if (allocated(load_cases(l)%temperature%myType)) &
+              call IO_error(830_pI16, 'load case', l, 'only one of T or T_dot allowed in thermal BC', emph=[2])
+            load_cases(l)%temperature%myType = step_therm%key(m)
+            if (load_cases(l)%temperature%myType == 'dot_T') then
+              call IO_warning(10, 'dot_T', 'is deprecated in favor of', 'T_dot',emph=[1,3])
+              load_cases(l)%temperature%myType = 'T_dot'
+            end if
+            load_cases(l)%temperature%value  = step_therm%get_asReal(m)
+          case ('thermostat')
+            load_cases(l)%temperature%thermostat = step_therm%get_asStr(m)
+            if (load_cases(l)%temperature%thermostat /= 'shift' .and. &
+                load_cases(l)%temperature%thermostat /= 'scale') &
+              call IO_error(830_pI16, 'load case', l, 'thermal BC thermostat must be shift or scale', emph=[2])
+        end select
+      end do readTherm
+      if (allocated(load_cases(l)%temperature%myType) .and. .not. allocated(load_cases(l)%temperature%thermostat)) &
+        call IO_error(830_pI16, 'load case', l, 'thermal BC requires thermostat: shift or scale', emph=[2])
+    end if
+
+    step_discretization => load_step%get_dict('discretization')
+    load_cases(l)%t = step_discretization%get_asReal('t')
+    load_cases(l)%N = step_discretization%get_asInt  ('N')
+    load_cases(l)%r = step_discretization%get_asReal('r',defaultVal= 1.0_pREAL)
+
+    load_cases(l)%f_restart = load_step%get_asInt('f_restart', defaultVal=huge(0))
+    if (load_step%get_asStr('f_out',defaultVal='n/a') == 'none') then
+      load_cases(l)%f_out = huge(0)
+    else
+      load_cases(l)%f_out = load_step%get_asInt('f_out', defaultVal=1)
+    end if
+    load_cases(l)%estimate_rate = load_step%get_asBool('estimate_rate',defaultVal=.true.)
+
+    reportAndCheck: if (worldrank == 0) then
+      print'(/,1x,a,1x,i0)', 'load case:', l
+      print'(2x,a,1x,l1)', 'estimate_rate:', load_cases(l)%estimate_rate
+      if (load_cases(l)%deformation%myType == 'F') then
+        print'(2x,a)', 'F:'
+      else
+        print'(2x,a)', load_cases(l)%deformation%myType//' / 1/s:'
+      end if
+      do i = 1, 3; do j = 1, 3
+        if (load_cases(l)%deformation%mask(i,j)) then
+          write(IO_STDOUT,'(2x,12a)',advance='no') '     x      '
+        else
+          write(IO_STDOUT,'(2x,f12.7)',advance='no') load_cases(l)%deformation%values(i,j)
+        end if
+        end do; write(IO_STDOUT,'(/)',advance='no')
+      end do
+      if (any(load_cases(l)%stress%mask .eqv. load_cases(l)%deformation%mask)) &
+        call IO_error(830_pI16, 'mask consistency for mechanical violated in load case', l, emph=[2])
+      if (any(.not.(load_cases(l)%stress%mask .or. transpose(load_cases(l)%stress%mask)) .and. (math_I3<1))) &
+        call IO_error(830_pI16, 'mixed boundary conditions allow rotation in load case', l, emph=[2])
+
+      if (load_cases(l)%stress%myType == 'P')     print'(2x,a)', 'P / MPa:'
+      if (load_cases(l)%stress%myType == 'P_dot') print'(2x,a)', 'P_dot / MPa/s:'
+
+      if (load_cases(l)%stress%myType /= '') then
+        do i = 1, 3; do j = 1, 3
+          if (load_cases(l)%stress%mask(i,j)) then
+            write(IO_STDOUT,'(2x,12a)',advance='no') '     x      '
+          else
+            write(IO_STDOUT,'(2x,f12.4)',advance='no') load_cases(l)%stress%values(i,j)*1e-6_pREAL
+          end if
+          end do; write(IO_STDOUT,'(/)',advance='no')
+        end do
+      end if
+      if (any(dNeq(load_cases(l)%rot%asMatrix(), math_I3))) &
+        write(IO_STDOUT,'(2x,a,/,3(3(3x,f12.7,1x)/))',advance='no') 'R:',&
+                 transpose(load_cases(l)%rot%asMatrix())
+      if (allocated(load_cases(l)%electric_field%myType)) then
+        print'(2x,a)', 'E / V/m:'
+        do i = 1, 3
+          if (load_cases(l)%electric_field%mask(i)) then
+            write(IO_STDOUT,'(2x,12a)',advance='no') '     x      '
+          else
+            write(IO_STDOUT,'(2x,f12.4)',advance='no') load_cases(l)%electric_field%values(i)
+          end if
+        end do
+        write(IO_STDOUT,'(/)',advance='no')
+      end if
+
+      if (allocated(load_cases(l)%current_density%myType)) then
+        print'(2x,a)', 'J / A/m²:'
+        do i = 1, 3
+          if (load_cases(l)%current_density%mask(i)) then
+            write(IO_STDOUT,'(2x,12a)',advance='no') '     x      '
+          else
+            write(IO_STDOUT,'(2x,es12.4)',advance='no') load_cases(l)%current_density%values(i)
+          end if
+        end do
+        write(IO_STDOUT,'(/)',advance='no')
+      end if
+      if (allocated(load_cases(l)%temperature%myType)) then
+        if (load_cases(l)%temperature%myType == 'T') then
+          print'(2x,a,1x,f0.3)', 'T / K:', load_cases(l)%temperature%value
+        else
+          print'(2x,a,1x,f0.3)', 'T_dot / K/s:', load_cases(l)%temperature%value
+        end if
+        print'(2x,a,1x,a)', 'thermal BC thermostat:', load_cases(l)%temperature%thermostat
+      end if
+
+      if (solver%get_asStr('mechanical') == 'spectral_Galerkin' .and. step_mech%contains('R')) &
+        call IO_error(830_pI16, 'load case', l, 'contains rotation', 'R', &
+                      'which is not supported when using the Galerkin solver', emph=[2,4])
+      if (load_cases(l)%r <= 0.0_pREAL) &
+        call IO_error(830_pI16, 'non-positive ratio for geometric progression in load case', l, emph=[2])
+      if (load_cases(l)%t <= 0.0_pREAL) &
+        call IO_error(830_pI16, 'negative time increment in load case', l, emph=[2])
+      if (load_cases(l)%N < 1) &
+        call IO_error(830_pI16, 'non-positive number of increments in load case', l, emph=[2])
+      if (load_cases(l)%f_out < 1) &
+        call IO_error(830_pI16, 'non-positive result frequency in load case', l, emph=[2])
+      if (load_cases(l)%f_restart < 1) &
+        call IO_error(830_pI16, 'non-positive restart frequency in load case', l, emph=[2])
+
+      if (dEq(load_cases(l)%r,1.0_pREAL,1.e-9_pREAL)) then
+        print'(2x,a)', 'r: 1 (constant step width)'
+      else
+        print'(2x,a,1x,f0.3)', 'r:', load_cases(l)%r
+      end if
+      print'(2x,a,1x,f0.3)',   't:', load_cases(l)%t
+      print'(2x,a,1x,i0)',     'N:', load_cases(l)%N
+      if (load_cases(l)%f_out < huge(0)) &
+        print'(2x,a,1x,i0)',   'f_out:', load_cases(l)%f_out
+      if (load_cases(l)%f_restart < huge(0)) &
+        print'(2x,a,1x,i0)',   'f_restart:', load_cases(l)%f_restart
+
+    end if reportAndCheck
+  end do
+end function parse_and_print_load_cases
+
+
+subroutine get_masked_tensor(values,mask,tensor)
+
+#ifndef __GFORTRAN__
+  use prec
+  use types
+
+  import, none
+#endif
 
   real(pREAL), intent(out), dimension(3,3) :: values
   logical,     intent(out), dimension(3,3) :: mask
-  type(tList), pointer :: tensor
+  type(tList), pointer, intent(in) :: tensor
 
   type(tList), pointer :: row
   integer :: i,j
@@ -459,116 +726,24 @@ subroutine getMaskedTensor(values,mask,tensor)
     end do
   end do
 
-end subroutine getMaskedTensor
+end subroutine get_masked_tensor
 
 
-function parseLoadsteps(load_steps) result(loadCases)
+subroutine get_masked_vector(values,mask,vector)
 
-  type(tList), intent(in), target :: load_steps
-  type(tLoadCase), allocatable, dimension(:) :: loadCases                                           !< array of all load cases
+  real(pREAL), intent(out), dimension(3) :: values
+  logical,     intent(out), dimension(3) :: mask
+  type(tList), pointer                   :: vector
 
-  integer :: l,m
-  type(tDict), pointer :: &
-    load_step, &
-    step_bc, &
-    step_mech, &
-    step_discretization
+  integer :: i
 
 
-  allocate(loadCases(size(load_steps)))
-  do l = 1, size(load_steps)
-    load_step => load_steps%get_dict(l)
-    step_bc   => load_step%get_dict('boundary_conditions')
-    step_mech => step_bc%get_dict('mechanical')
-    loadCases(l)%stress%myType=''
-    readMech: do m = 1, size(step_mech)
-      select case (step_mech%key(m))
-        case ('L','dot_F','F_dot','F')                                                              ! assign values for the deformation BC matrix
-          loadCases(l)%deformation%myType = step_mech%key(m)
-          if (loadCases(l)%deformation%myType == 'F_dot') loadCases(l)%deformation%myType = 'dot_F'
-          call getMaskedTensor(loadCases(l)%deformation%values,loadCases(l)%deformation%mask,step_mech%get_list(m))
-        case ('dot_P','P','P_dot')
-          loadCases(l)%stress%myType = step_mech%key(m)
-          if (loadCases(l)%stress%myType == 'P_dot') loadCases(l)%stress%myType = 'dot_P'
-          call getMaskedTensor(loadCases(l)%stress%values,loadCases(l)%stress%mask,step_mech%get_list(m))
-      end select
-      call loadCases(l)%rot%fromAxisAngle(step_mech%get_as1dReal('R',defaultVal = real([0.0,0.0,1.0,0.0],pREAL)),degrees=.true.)
-    end do readMech
-    if (.not. allocated(loadCases(l)%deformation%myType)) &
-      call IO_error(error_ID=837,ext_msg = 'L, F_dot/dot_F, or F missing')
-
-    step_discretization => load_step%get_dict('discretization')
-    loadCases(l)%t = step_discretization%get_asReal('t')
-    loadCases(l)%N = step_discretization%get_asInt  ('N')
-    loadCases(l)%r = step_discretization%get_asReal('r',defaultVal= 1.0_pREAL)
-
-    loadCases(l)%f_restart = load_step%get_asInt('f_restart', defaultVal=huge(0))
-    if (load_step%get_asStr('f_out',defaultVal='n/a') == 'none') then
-      loadCases(l)%f_out = huge(0)
-    else
-      loadCases(l)%f_out = load_step%get_asInt('f_out', defaultVal=1)
-    end if
-    loadCases(l)%estimate_rate = (load_step%get_asBool('estimate_rate',defaultVal=.true.) .and. l>1)
-
-    reportAndCheck: if (worldrank == 0) then
-      print'(/,1x,a,1x,i0)', 'load case:', l
-      print'(2x,a,1x,l1)', 'estimate_rate:', loadCases(l)%estimate_rate
-      if (loadCases(l)%deformation%myType == 'F') then
-        print'(2x,a)', 'F:'
-      else
-        print'(2x,a)', loadCases(l)%deformation%myType//' / 1/s:'
-      end if
-      do i = 1, 3; do j = 1, 3
-        if (loadCases(l)%deformation%mask(i,j)) then
-          write(IO_STDOUT,'(2x,12a)',advance='no') '     x      '
-        else
-          write(IO_STDOUT,'(2x,f12.7)',advance='no') loadCases(l)%deformation%values(i,j)
-        end if
-        end do; write(IO_STDOUT,'(/)',advance='no')
-      end do
-      if (any(loadCases(l)%stress%mask .eqv. loadCases(l)%deformation%mask)) errorID = 831
-      if (any(.not.(loadCases(l)%stress%mask .or. transpose(loadCases(l)%stress%mask)) .and. (math_I3<1))) &
-        errorID = 838                                                                               ! no rotation is allowed by stress BC
-
-      if (loadCases(l)%stress%myType == 'P')     print'(2x,a)', 'P / MPa:'
-      if (loadCases(l)%stress%myType == 'dot_P') print'(2x,a)', 'dot_P / MPa/s:'
-
-      if (loadCases(l)%stress%myType /= '') then
-        do i = 1, 3; do j = 1, 3
-          if (loadCases(l)%stress%mask(i,j)) then
-            write(IO_STDOUT,'(2x,12a)',advance='no') '     x      '
-          else
-            write(IO_STDOUT,'(2x,f12.4)',advance='no') loadCases(l)%stress%values(i,j)*1e-6_pREAL
-          end if
-          end do; write(IO_STDOUT,'(/)',advance='no')
-        end do
-      end if
-      if (any(dNeq(loadCases(l)%rot%asMatrix(), math_I3))) &
-        write(IO_STDOUT,'(2x,a,/,3(3(3x,f12.7,1x)/))',advance='no') 'R:',&
-                 transpose(loadCases(l)%rot%asMatrix())
-
-      if (loadCases(l)%r <= 0.0_pREAL) errorID = 833
-      if (loadCases(l)%t <= 0.0_pREAL) errorID = 834
-      if (loadCases(l)%N < 1)          errorID = 835
-      if (loadCases(l)%f_out < 1)      errorID = 836
-      if (loadCases(l)%f_restart < 1)  errorID = 839
-
-      if (dEq(loadCases(l)%r,1.0_pREAL,1.e-9_pREAL)) then
-        print'(2x,a)', 'r: 1 (constant step width)'
-      else
-        print'(2x,a,1x,f0.3)', 'r:', loadCases(l)%r
-      end if
-      print'(2x,a,1x,f0.3)',   't:', loadCases(l)%t
-      print'(2x,a,1x,i0)',     'N:', loadCases(l)%N
-      if (loadCases(l)%f_out < huge(0)) &
-        print'(2x,a,1x,i0)',   'f_out:', loadCases(l)%f_out
-      if (loadCases(l)%f_restart < huge(0)) &
-        print'(2x,a,1x,i0)',   'f_restart:', loadCases(l)%f_restart
-
-      if (errorID > 0) call IO_error(errorID,label1='line',ID1=l)
-
-    end if reportAndCheck
+  values = 0.0_pREAL
+  do i = 1, 3
+    mask(i) = vector%get_asStr(i) == 'x'
+    if (.not. mask(i)) values(i) = vector%get_asReal(i)
   end do
-end function parseLoadsteps
+
+end subroutine get_masked_vector
 
 end program DAMASK_grid

@@ -13,11 +13,6 @@ submodule(homogenization) chemical
     real(pREAL), dimension(:,:), allocatable :: mu                                                  ! Diffusion potential
   end type tDataContainer
 
-!  integer, dimension(:), allocatable :: &
-!    homogenization_chemical_Ncomponents
-!  integer :: &
-!    homogenization_chemical_maxNcomponents
-!
   type(tDataContainer), dimension(:), allocatable :: current
 
   type :: tParameters
@@ -57,7 +52,7 @@ module subroutine chemical_init()
     associate(prm => param(ho))
       if (configHomogenization%contains('chemical')) then
         configHomogenizationChemical => configHomogenization%get_dict('chemical')
-        homogenization_chemical_Ncomponents(ho) = configHomogenizationChemical%get_asInt('N_components',defaultVal=0) ! should probably not be defined in homogenization?
+        homogenization_chemical_Ncomponents(ho) = material_N_species
 #if defined (__GFORTRAN__)
         prm%output = output_as1dStr(configHomogenizationChemical)
 #else
@@ -70,7 +65,7 @@ module subroutine chemical_init()
     end associate
   end do
 
-  homogenization_chemical_maxNcomponents = maxval(homogenization_chemical_Ncomponents)
+  homogenization_chemical_maxNcomponents = material_N_species
 
   call pass_init()
 
@@ -103,7 +98,7 @@ module subroutine chemical_partition(Delta_t, ce)
   mu    = current(material_ID_homogenization(ce))%mu(:,material_entry_homogenization(ce))
   do co = 1, homogenization_Nconstituents(material_ID_homogenization(ce))
     comp =  phase_calculate_composition(mu,co,ce)   ! need to calculate composition for each constituent for given diffusion potential
-    !call phase_chemical_setField(comp,Delta_t,co,ce)
+    call phase_chemical_setField(comp,Delta_t,co,ce)
   end do
 
 end subroutine chemical_partition
@@ -178,7 +173,7 @@ end function homogenization_mobility
 
 
 !--------------------------------------------------------------------------------------------------
-!> @brief Set chemical field (mu)
+!> @brief Set chemical field (mu).
 !--------------------------------------------------------------------------------------------------
 module subroutine homogenization_chemical_setField(mu, comp, Delta_t, ce)
 
@@ -197,30 +192,27 @@ end subroutine homogenization_chemical_setField
 
 
 !--------------------------------------------------------------------------------------------------
-!> @brief Writes result to HDF5 output file.
+!> @brief Write result to HDF5 output file.
 !--------------------------------------------------------------------------------------------------
 module subroutine chemical_result(ho,group)
 
   integer,          intent(in) :: ho
   character(len=*), intent(in) :: group
 
-  integer :: o, ou
+  integer :: o
 
+
+ ! ToDo (MD): replace hard-coded "systems" with appropriate name in HDF5/result.
+ !            I belive we call it "component" because "constituent" has already a different meaning
   associate(prm => param(ho))
     outputsLoop: do o = 1,size(prm%output)
       select case(trim(prm%output(o)))
-        case('comp')
-          do ou = 1, homogenization_chemical_Ncomponents(ho)
-              call result_writeDataset(current(ho)%comp(ou,:),group,trim(material_name_species(ou)), &
-                                       'concentration of '//trim(material_name_species(ou)),'mole fraction')
-          end do
+        case('x')
+          call result_writeDataset(current(ho)%comp,group,'x','mole fraction','1', &
+                                   material_name_species)
         case('mu')
-          do ou = 1, homogenization_chemical_Ncomponents(ho)-1
-              call result_writeDataset(current(ho)%mu(ou,:),group,'mu_'//trim(material_name_species(ou)), &
-                                       'total potential of '//trim(material_name_species(ou)),'J')
-          end do
-
-
+          call result_writeDataset(current(ho)%mu,group,'mu','total potential','J', &
+                                   material_name_species(:size(material_name_species)-1))
       end select
     end do outputsLoop
   end associate

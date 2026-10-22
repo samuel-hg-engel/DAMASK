@@ -10,20 +10,22 @@
 #include <petsc/finclude/petscsys.h>
 #endif
 module math
+#ifdef PETSC
+  use PETScSys
+#ifndef PETSC_EXPOSES_MPI
+  use MPI_f08
+#endif
+#endif
+
   use prec
   use misc
   use IO
   use config
+  use constants
   use types
   use parallelization
   use LAPACK_interface
 
-#ifdef PETSC
-  use PETScSys
-#ifndef PETSC_HAVE_MPI_F90MODULE_VISIBILITY
-  use MPI_f08
-#endif
-#endif
 
   implicit none(type,external)
   public
@@ -32,6 +34,26 @@ module math
     module procedure math_expand_int
     module procedure math_expand_real
   end interface math_expand
+
+  interface math_33to9
+    module procedure math_33to9_real
+    module procedure math_33to9_bool
+  end interface math_33to9
+
+  interface math_9to33
+    module procedure math_9to33_real
+    module procedure math_9to33_bool
+  end interface math_9to33
+
+  interface math_3333to99
+    module procedure math_3333to99_real
+    module procedure math_3333to99_bool
+  end interface math_3333to99
+
+  interface math_99to3333
+    module procedure math_99to3333_real
+    module procedure math_99to3333_bool
+  end interface math_99to3333
 
   real(pREAL), parameter :: &
     PI = acos(-1.0_pREAL), &                                                                        !< ratio of a circle's circumference to its diameter
@@ -45,45 +67,6 @@ module math
       0, 1, 0, &
       0, 0, 1  &
       ],shape(math_I3)),pREAL)                                                                      !< 3x3 Identity
-
-  real(pREAL), dimension(*), parameter, private :: &
-    NRMMANDEL = [1.0_pREAL, 1.0_pREAL,1.0_pREAL, sqrt(2.0_pREAL), sqrt(2.0_pREAL), sqrt(2.0_pREAL)] !< forward weighting for Mandel notation
-
-  real(pREAL), dimension(*), parameter, private :: &
-    INVNRMMANDEL = 1.0_pREAL/NRMMANDEL                                                              !< backward weighting for Mandel notation
-
-  integer, dimension (2,6), parameter, private :: &
-    MAPNYE = reshape([&
-      1,1, &
-      2,2, &
-      3,3, &
-      1,2, &
-      2,3, &
-      1,3  &
-      ],shape(MAPNYE))                                                                              !< arrangement in Nye notation.
-
-  integer, dimension (2,6), parameter, private :: &
-    MAPVOIGT = reshape([&
-      1,1, &
-      2,2, &
-      3,3, &
-      2,3, &
-      1,3, &
-      1,2  &
-      ],shape(MAPVOIGT))                                                                            !< arrangement in Voigt notation
-
-  integer, dimension (2,9), parameter, private :: &
-    MAPPLAIN = reshape([&
-      1,1, &
-      1,2, &
-      1,3, &
-      2,1, &
-      2,2, &
-      2,3, &
-      3,1, &
-      3,2, &
-      3,3  &
-      ],shape(MAPPLAIN))                                                                            !< arrangement in Plain notation
 
 
 contains
@@ -290,14 +273,9 @@ pure function math_identity4th()
   integer :: i,j,k,l
 
 
-#ifndef __INTEL_COMPILER
-  do concurrent(i=1:3, j=1:3, k=1:3, l=1:3)
+  do l=1,3; do k=1,3; do j=1,3; do i=1,3
     math_identity4th(i,j,k,l) = 0.5_pREAL*(math_I3(i,k)*math_I3(j,l)+math_I3(i,l)*math_I3(j,k))
-  end do
-#else
-  forall(i=1:3, j=1:3, k=1:3, l=1:3) &
-    math_identity4th(i,j,k,l) = 0.5_pREAL*(math_I3(i,k)*math_I3(j,l)+math_I3(i,l)*math_I3(j,k))
-#endif
+  end do; end do; end do; end do
 
 end function math_identity4th
 
@@ -368,13 +346,9 @@ pure function math_outer(A,B)
   integer :: i,j
 
 
-#ifndef __INTEL_COMPILER
-  do concurrent(i=1:size(A,1), j=1:size(B,1))
+  do j=1,size(B,1); do i=1,size(A,1)
     math_outer(i,j) = A(i)*B(j)
-  end do
-#else
-  forall(i=1:size(A,1), j=1:size(B,1)) math_outer(i,j) = A(i)*B(j)
-#endif
+  end do; end do
 
 end function math_outer
 
@@ -418,13 +392,9 @@ pure function math_mul3333xx33(A,B)
   integer :: i,j
 
 
-#ifndef __INTEL_COMPILER
-  do concurrent(i=1:3, j=1:3)
+  do j=1,3; do i=1,3
     math_mul3333xx33(i,j) = sum(A(i,j,1:3,1:3)*B(1:3,1:3))
-  end do
-#else
-  forall (i=1:3, j=1:3) math_mul3333xx33(i,j) = sum(A(i,j,1:3,1:3)*B(1:3,1:3))
-#endif
+  end do; end do
 
 end function math_mul3333xx33
 
@@ -441,13 +411,9 @@ pure function math_mul3333xx3333(A,B)
   integer :: i,j,k,l
 
 
-#ifndef __INTEL_COMPILER
-  do concurrent(i=1:3, j=1:3, k=1:3, l=1:3)
+  do l=1,3; do k=1,3; do j=1,3; do i=1,3
     math_mul3333xx3333(i,j,k,l) = sum(A(i,j,1:3,1:3)*B(1:3,1:3,k,l))
-  end do
-#else
-  forall(i=1:3, j=1:3, k=1:3, l=1:3) math_mul3333xx3333(i,j,k,l) = sum(A(i,j,1:3,1:3)*B(1:3,1:3,k,l))
-#endif
+  end do; end do; end do; end do
 
 end function math_mul3333xx3333
 
@@ -488,11 +454,10 @@ pure function math_inv33(A)
   real(pREAL), dimension(3,3), intent(in) :: A
   real(pREAL), dimension(3,3) :: math_inv33
 
-  real(pREAL) :: DetA
   logical     :: error
 
 
-  call math_invert33(math_inv33,DetA,error,A)
+  call math_invert33(math_inv33,error=error,A=A)
   if (error) math_inv33 = 0.0_pREAL
 
 end function math_inv33
@@ -541,7 +506,7 @@ end subroutine math_invert33
 
 
 !--------------------------------------------------------------------------------------------------
-!> @brief Invert symmetriced 3x3x3x3 matrix.
+!> @brief Invert symmetrized 3x3x3x3 tensor.
 !--------------------------------------------------------------------------------------------------
 pure function math_invSym3333(A)
 
@@ -710,292 +675,233 @@ end function math_det
 
 
 !--------------------------------------------------------------------------------------------------
-!> @brief Convert 3x3 matrix into 9 vector.
+!> @brief Flatten: 3x3 -> 9 (real).
 !--------------------------------------------------------------------------------------------------
-pure function math_33to9(m33)
+pure function math_33to9_real(m33) result(m9)
 
-  real(pREAL), dimension(9)               :: math_33to9
+  real(pREAL), dimension(9)               :: m9
   real(pREAL), dimension(3,3), intent(in) :: m33
 
-  integer :: i
 
+  m9 = reshape(transpose(m33), [9])
 
-  math_33to9 = [(m33(MAPPLAIN(1,i),MAPPLAIN(2,i)),i=1,9)]
-
-end function math_33to9
-
-
-!--------------------------------------------------------------------------------------------------
-!> @brief Convert 9 vector into 3x3 matrix.
-!--------------------------------------------------------------------------------------------------
-pure function math_9to33(v9)
-
-  real(pREAL), dimension(3,3)           :: math_9to33
-  real(pREAL), dimension(9), intent(in) :: v9
-
-  integer :: i
-
-
-  do i = 1, 9
-    math_9to33(MAPPLAIN(1,i),MAPPLAIN(2,i)) = v9(i)
-  end do
-
-end function math_9to33
+end function math_33to9_real
 
 
 !--------------------------------------------------------------------------------------------------
-!> @brief Convert symmetric 3x3 matrix into 6 vector.
-!> @details Weighted conversion (default) rearranges according to Nye and weights shear
-! components according to Mandel. Advisable for matrix operations.
-! Unweighted conversion only changes order according to Nye
+!> @brief Flatten: 3x3 -> 9 (logical).
 !--------------------------------------------------------------------------------------------------
-pure function math_sym33to6(m33,weighted)
+pure function math_33to9_bool(m33) result(m9)
 
-  real(pREAL), dimension(6)               :: math_sym33to6
-  real(pREAL), dimension(3,3), intent(in) :: m33                                                    !< symmetric 3x3 matrix (no internal check)
-  logical,     optional,       intent(in) :: weighted                                               !< weight according to Mandel (.true. by default)
+  logical, dimension(9)               :: m9
+  logical, dimension(3,3), intent(in) :: m33
 
-  real(pREAL), dimension(6) :: w
-  integer :: i
 
-  w = merge(NRMMANDEL,1.0_pREAL,misc_optional(weighted,.true.))
+  m9 = reshape(transpose(m33), [9])
 
-  math_sym33to6 = [(w(i)*m33(MAPNYE(1,i),MAPNYE(2,i)),i=1,6)]
+end function math_33to9_bool
+
+
+!--------------------------------------------------------------------------------------------------
+!> @brief Unflatten 9 -> 3x3 (real).
+!--------------------------------------------------------------------------------------------------
+pure function math_9to33_real(m9) result(m33)
+
+  real(pREAL), dimension(3,3)           :: m33
+  real(pREAL), dimension(9), intent(in) :: m9
+
+
+  m33 = transpose(reshape(m9, [3,3]))
+
+end function math_9to33_real
+
+
+!--------------------------------------------------------------------------------------------------
+!> @brief Unflatten 9 -> 3x3 (logical).
+!--------------------------------------------------------------------------------------------------
+pure function math_9to33_bool(m9) result(m33)
+
+  logical, dimension(3,3)           :: m33
+  logical, dimension(9), intent(in) :: m9
+
+
+  m33 = transpose(reshape(m9, [3,3]))
+
+end function math_9to33_bool
+
+
+!--------------------------------------------------------------------------------------------------
+!> @brief Flatten 3x3x3x3 -> 9x9 (real).
+!--------------------------------------------------------------------------------------------------
+pure function math_3333to99_real(m3333) result(m99)
+
+  real(pREAL), dimension(9,9)                 :: m99
+  real(pREAL), dimension(3,3,3,3), intent(in) :: m3333
+
+
+  m99 = reshape(reshape(m3333, [3,3,3,3], order=[2,1,4,3]), [9,9])
+
+end function math_3333to99_real
+
+
+!--------------------------------------------------------------------------------------------------
+!> @brief Flatten 3x3x3x3 -> 9x9 (logical).
+!--------------------------------------------------------------------------------------------------
+pure function math_3333to99_bool(m3333) result(m99)
+
+  logical, dimension(9,9)                 :: m99
+  logical, dimension(3,3,3,3), intent(in) :: m3333
+
+
+  m99 = reshape(reshape(m3333, [3,3,3,3], order=[2,1,4,3]), [9,9])
+
+end function math_3333to99_bool
+
+
+!--------------------------------------------------------------------------------------------------
+!> @brief Unflatten 9x9 -> 3x3x3x3 (real).
+!--------------------------------------------------------------------------------------------------
+pure function math_99to3333_real(m99) result(m3333)
+
+  real(pREAL), dimension(3,3,3,3)         :: m3333
+  real(pREAL), dimension(9,9), intent(in) :: m99
+
+
+  m3333 = reshape(reshape(m99, [3,3,3,3]), [3,3,3,3], order=[2,1,4,3])
+
+end function math_99to3333_real
+
+
+!--------------------------------------------------------------------------------------------------
+!> @brief Unflatten 9x9 -> 3x3x3x3 (logical).
+!--------------------------------------------------------------------------------------------------
+pure function math_99to3333_bool(m99) result(m3333)
+
+  logical, dimension(3,3,3,3)         :: m3333
+  logical, dimension(9,9), intent(in) :: m99
+
+
+  m3333 = reshape(reshape(m99, [3,3,3,3]), [3,3,3,3], order=[2,1,4,3])
+
+end function math_99to3333_bool
+
+
+!--------------------------------------------------------------------------------------------------
+!> @brief Compress 2nd order tensor using Mandel notation.
+!--------------------------------------------------------------------------------------------------
+pure function math_sym33to6(m) result(m_tilde)
+
+  real(pREAL), dimension(6) :: m_tilde
+  real(pREAL), dimension(3,3), intent(in) :: m                                                      !< symmetric stress or strain tensor
+
+
+  associate(WM1 => WGT_MANDEL(1))
+    m_tilde = [m(1,1), m(2,2), m(3,3), m(3,2)*WM1, m(3,1)*WM1, m(2,1)*WM1]
+  end associate
 
 end function math_sym33to6
 
 
 !--------------------------------------------------------------------------------------------------
-!> @brief Convert 6 vector into symmetric 3x3 matrix.
-!> @details Weighted conversion (default) rearranges according to Nye and weights shear
-! components according to Mandel. Advisable for matrix operations.
-! Unweighted conversion only changes order according to Nye
+!> @brief Expand 2nd order tensor using Mandel notation.
 !--------------------------------------------------------------------------------------------------
-pure function math_6toSym33(v6,weighted)
+pure function math_6toSym33(m_tilde) result(m)
 
-  real(pREAL), dimension(3,3)           :: math_6toSym33
-  real(pREAL), dimension(6), intent(in) :: v6                                                       !< 6 vector
-  logical,     optional,     intent(in) :: weighted                                                 !< weight according to Mandel (.true. by default)
-
-  real(pREAL), dimension(6) :: w
-  integer :: i
+  real(pREAL), dimension(3,3) :: m
+  real(pREAL), dimension(6), intent(in) :: m_tilde                                                  !< stress or strain tensor
 
 
-  w = merge(INVNRMMANDEL,1.0_pREAL,misc_optional(weighted,.true.))
-
-  do i=1,6
-    math_6toSym33(MAPNYE(1,i),MAPNYE(2,i)) = w(i)*v6(i)
-    math_6toSym33(MAPNYE(2,i),MAPNYE(1,i)) = w(i)*v6(i)
-  end do
+  associate(IWM1 => 1.0_pREAL/WGT_MANDEL(1))
+    m = reshape([m_tilde(1),       m_tilde(6)*IWM1, m_tilde(5)*IWM1, &
+                 m_tilde(6)*IWM1,  m_tilde(2),      m_tilde(4)*IWM1, &
+                 m_tilde(5)*IWM1,  m_tilde(4)*IWM1, m_tilde(3)       ],[3,3])
+  end associate
 
 end function math_6toSym33
 
 
 !--------------------------------------------------------------------------------------------------
-!> @brief Convert 3x3x3x3 matrix into 9x9 matrix.
+!> @brief Compress 4th order tensor using Mandel notation.
 !--------------------------------------------------------------------------------------------------
-pure function math_3333to99(m3333)
+pure function math_sym3333to66(m) result(m_tilde)
 
-  real(pREAL), dimension(9,9)                 :: math_3333to99
-  real(pREAL), dimension(3,3,3,3), intent(in) :: m3333
-
-  integer :: i,j
+  real(pREAL), dimension(6,6)                 :: m_tilde
+  real(pREAL), dimension(3,3,3,3), intent(in) :: m                                                  !< symmetric stiffness or compliance tensor
 
 
-#ifndef __INTEL_COMPILER
-  do concurrent(i=1:9, j=1:9)
-    math_3333to99(i,j) = m3333(MAPPLAIN(1,i),MAPPLAIN(2,i),MAPPLAIN(1,j),MAPPLAIN(2,j))
-  end do
-#else
-  forall(i=1:9, j=1:9) math_3333to99(i,j) = m3333(MAPPLAIN(1,i),MAPPLAIN(2,i),MAPPLAIN(1,j),MAPPLAIN(2,j))
-#endif
+  associate(WM1 => WGT_MANDEL(1), WM2 => WGT_MANDEL(2))
 
-end function math_3333to99
+    m_tilde = reshape([&
+      m(1,1,1,1),     m(2,2,1,1),     m(3,3,1,1),     m(2,3,1,1)*WM1, m(1,3,1,1)*WM1, m(1,2,1,1)*WM1, &
+      m(1,1,2,2),     m(2,2,2,2),     m(3,3,2,2),     m(2,3,2,2)*WM1, m(1,3,2,2)*WM1, m(1,2,2,2)*WM1, &
+      m(1,1,3,3),     m(2,2,3,3),     m(3,3,3,3),     m(2,3,3,3)*WM1, m(1,3,3,3)*WM1, m(1,2,3,3)*WM1, &
+      m(1,1,2,3)*WM1, m(2,2,2,3)*WM1, m(3,3,2,3)*WM1, m(2,3,2,3)*WM2, m(1,3,2,3)*WM2, m(1,2,2,3)*WM2, &
+      m(1,1,1,3)*WM1, m(2,2,1,3)*WM1, m(3,3,1,3)*WM1, m(2,3,1,3)*WM2, m(1,3,1,3)*WM2, m(1,2,1,3)*WM2, &
+      m(1,1,1,2)*WM1, m(2,2,1,2)*WM1, m(3,3,1,2)*WM1, m(2,3,1,2)*WM2, m(1,3,1,2)*WM2, m(1,2,1,2)*WM2 &
+                      ], [6,6])
 
-
-!--------------------------------------------------------------------------------------------------
-!> @brief Convert 9x9 matrix into 3x3x3x3 matrix.
-!--------------------------------------------------------------------------------------------------
-pure function math_99to3333(m99)
-
-  real(pREAL), dimension(3,3,3,3)         :: math_99to3333
-  real(pREAL), dimension(9,9), intent(in) :: m99
-
-  integer :: i,j
-
-
-#ifndef __INTEL_COMPILER
-  do concurrent(i=1:9, j=1:9)
-    math_99to3333(MAPPLAIN(1,i),MAPPLAIN(2,i),MAPPLAIN(1,j),MAPPLAIN(2,j)) = m99(i,j)
-  end do
-#else
-  forall(i=1:9, j=1:9) math_99to3333(MAPPLAIN(1,i),MAPPLAIN(2,i),MAPPLAIN(1,j),MAPPLAIN(2,j)) = m99(i,j)
-#endif
-
-end function math_99to3333
-
-
-!--------------------------------------------------------------------------------------------------
-!> @brief Convert symmetric 3x3x3x3 matrix into 6x6 matrix.
-!> @details Weighted conversion (default) rearranges according to Nye and weights shear
-! components according to Mandel. Advisable for matrix operations.
-! Unweighted conversion only rearranges order according to Nye
-!--------------------------------------------------------------------------------------------------
-pure function math_sym3333to66(m3333,weighted)
-
-  real(pREAL), dimension(6,6)                 :: math_sym3333to66
-  real(pREAL), dimension(3,3,3,3), intent(in) :: m3333                                              !< symmetric 3x3x3x3 matrix (no internal check)
-  logical,     optional,           intent(in) :: weighted                                           !< weight according to Mandel (.true. by default)
-
-  real(pREAL), dimension(6) :: w
-  integer :: i,j
-
-
-  w = merge(NRMMANDEL,1.0_pREAL,misc_optional(weighted,.true.))
-
-#ifndef __INTEL_COMPILER
-  do concurrent(i=1:6, j=1:6)
-    math_sym3333to66(i,j) = w(i)*w(j)*m3333(MAPNYE(1,i),MAPNYE(2,i),MAPNYE(1,j),MAPNYE(2,j))
-  end do
-#else
-  forall(i=1:6, j=1:6) math_sym3333to66(i,j) = w(i)*w(j)*m3333(MAPNYE(1,i),MAPNYE(2,i),MAPNYE(1,j),MAPNYE(2,j))
-#endif
+  end associate
 
 end function math_sym3333to66
 
 
 !--------------------------------------------------------------------------------------------------
-!> @brief Convert 6x6 matrix into symmetric 3x3x3x3 matrix.
-!> @details Weighted conversion (default) rearranges according to Nye and weights shear
-! components according to Mandel. Advisable for matrix operations.
-! Unweighted conversion only rearranges order according to Nye
+!> @brief Expand 4th order tensor using Mandel notation.
 !--------------------------------------------------------------------------------------------------
-pure function math_66toSym3333(m66,weighted)
+pure function math_66toSym3333(m_tilde) result(m)
 
-  real(pREAL), dimension(3,3,3,3)            :: math_66toSym3333
-  real(pREAL), dimension(6,6),    intent(in) :: m66                                                 !< 6x6 matrix
-  logical,     optional,          intent(in) :: weighted                                            !< weight according to Mandel (.true. by default)
-
-  real(pREAL), dimension(6) :: w
-  integer :: i,j
+  real(pREAL), dimension(3,3,3,3)            :: m
+  real(pREAL), dimension(6,6),    intent(in) :: m_tilde                                             !< stiffness or compliance tensor
 
 
-  w = merge(INVNRMMANDEL,1.0_pREAL,misc_optional(weighted,.true.))
+  associate(IWM1 => 1.0_pREAL/WGT_MANDEL(1), IWM2 => 1.0_pREAL/WGT_MANDEL(2))
 
-  do i=1,6; do j=1,6
-    math_66toSym3333(MAPNYE(1,i),MAPNYE(2,i),MAPNYE(1,j),MAPNYE(2,j)) = w(i)*w(j)*m66(i,j)
-    math_66toSym3333(MAPNYE(2,i),MAPNYE(1,i),MAPNYE(1,j),MAPNYE(2,j)) = w(i)*w(j)*m66(i,j)
-    math_66toSym3333(MAPNYE(1,i),MAPNYE(2,i),MAPNYE(2,j),MAPNYE(1,j)) = w(i)*w(j)*m66(i,j)
-    math_66toSym3333(MAPNYE(2,i),MAPNYE(1,i),MAPNYE(2,j),MAPNYE(1,j)) = w(i)*w(j)*m66(i,j)
-  end do; end do
+    ! 3x3 blocks for (k,l) = (1,1), (2,2), (3,3) from Mandel cols 1-3
+    ! (i,j) diagonal entries: weight=1; (i,j) shear entries: weight=1/sqrt(2)
+    m(:,:,1,1) = reshape([&
+      m_tilde(1,1),       m_tilde(6,1)*IWM1, m_tilde(5,1)*IWM1, &
+      m_tilde(6,1)*IWM1,  m_tilde(2,1),      m_tilde(4,1)*IWM1, &
+      m_tilde(5,1)*IWM1,  m_tilde(4,1)*IWM1, m_tilde(3,1)       &
+                         ], [3,3])
+
+    m(:,:,2,2) = reshape([&
+      m_tilde(1,2),       m_tilde(6,2)*IWM1, m_tilde(5,2)*IWM1, &
+      m_tilde(6,2)*IWM1,  m_tilde(2,2),      m_tilde(4,2)*IWM1, &
+      m_tilde(5,2)*IWM1,  m_tilde(4,2)*IWM1, m_tilde(3,2)       &
+                         ], [3,3])
+
+    m(:,:,3,3) = reshape([&
+      m_tilde(1,3),       m_tilde(6,3)*IWM1, m_tilde(5,3)*IWM1, &
+      m_tilde(6,3)*IWM1,  m_tilde(2,3),      m_tilde(4,3)*IWM1, &
+      m_tilde(5,3)*IWM1,  m_tilde(4,3)*IWM1, m_tilde(3,3)       &
+                         ], [3,3])
+
+    ! 3x3 blocks for (k,l) = (2,3)/(3,2), (1,3)/(3,1), (1,2)/(2,1) from Mandel cols 4-6
+    ! (i,j) diagonal entries: weight=1/sqrt(2); (i,j) shear entries: weight=1/2
+    m(:,:,2,3) = reshape([&
+      m_tilde(1,4)*IWM1,  m_tilde(6,4)*IWM2, m_tilde(5,4)*IWM2, &
+      m_tilde(6,4)*IWM2,  m_tilde(2,4)*IWM1, m_tilde(4,4)*IWM2, &
+      m_tilde(5,4)*IWM2,  m_tilde(4,4)*IWM2, m_tilde(3,4)*IWM1  &
+                         ], [3,3])
+    m(:,:,3,2) = m(:,:,2,3)
+
+    m(:,:,1,3) = reshape([&
+      m_tilde(1,5)*IWM1,  m_tilde(6,5)*IWM2, m_tilde(5,5)*IWM2, &
+      m_tilde(6,5)*IWM2,  m_tilde(2,5)*IWM1, m_tilde(4,5)*IWM2, &
+      m_tilde(5,5)*IWM2,  m_tilde(4,5)*IWM2, m_tilde(3,5)*IWM1  &
+                         ], [3,3])
+    m(:,:,3,1) = m(:,:,1,3)
+
+    m(:,:,1,2) = reshape([&
+      m_tilde(1,6)*IWM1,  m_tilde(6,6)*IWM2, m_tilde(5,6)*IWM2, &
+      m_tilde(6,6)*IWM2,  m_tilde(2,6)*IWM1, m_tilde(4,6)*IWM2, &
+      m_tilde(5,6)*IWM2,  m_tilde(4,6)*IWM2, m_tilde(3,6)*IWM1  &
+                         ], [3,3])
+    m(:,:,2,1) = m(:,:,1,2)
+
+  end associate
 
 end function math_66toSym3333
-
-
-!--------------------------------------------------------------------------------------------------
-!> @brief Convert 6 Voigt stress vector into symmetric 3x3 tensor.
-!--------------------------------------------------------------------------------------------------
-pure function math_Voigt6to33_stress(sigma_tilde) result(sigma)
-
-  real(pREAL), dimension(3,3) :: sigma
-  real(pREAL), dimension(6), intent(in) :: sigma_tilde
-
-
-  sigma = reshape([sigma_tilde(1), sigma_tilde(6), sigma_tilde(5), &
-                   sigma_tilde(6), sigma_tilde(2), sigma_tilde(4), &
-                   sigma_tilde(5), sigma_tilde(4), sigma_tilde(3)],[3,3])
-
-end function math_Voigt6to33_stress
-
-
-!--------------------------------------------------------------------------------------------------
-!> @brief Convert 6 Voigt strain vector into symmetric 3x3 tensor.
-!--------------------------------------------------------------------------------------------------
-pure function math_Voigt6to33_strain(epsilon_tilde) result(epsilon)
-
-  real(pREAL), dimension(3,3) :: epsilon
-  real(pREAL), dimension(6), intent(in) :: epsilon_tilde
-
-
-  epsilon = reshape([          epsilon_tilde(1), 0.5_pREAL*epsilon_tilde(6), 0.5_pREAL*epsilon_tilde(5), &
-                     0.5_pREAL*epsilon_tilde(6),           epsilon_tilde(2), 0.5_pREAL*epsilon_tilde(4), &
-                     0.5_pREAL*epsilon_tilde(5), 0.5_pREAL*epsilon_tilde(4),           epsilon_tilde(3)],[3,3])
-
-end function math_Voigt6to33_strain
-
-
-!--------------------------------------------------------------------------------------------------
-!> @brief Convert 3x3 stress tensor into 6 Voigt vector.
-!--------------------------------------------------------------------------------------------------
-pure function math_33toVoigt6_stress(sigma) result(sigma_tilde)
-
-  real(pREAL), dimension(6) :: sigma_tilde
-  real(pREAL), dimension(3,3), intent(in) :: sigma
-
-
-  sigma_tilde = [sigma(1,1), sigma(2,2), sigma(3,3), &
-                 sigma(3,2), sigma(3,1), sigma(1,2)]
-
-end function math_33toVoigt6_stress
-
-
-!--------------------------------------------------------------------------------------------------
-!> @brief Convert 3x3 strain tensor into 6 Voigt vector.
-!--------------------------------------------------------------------------------------------------
-pure function math_33toVoigt6_strain(epsilon) result(epsilon_tilde)
-
-  real(pREAL), dimension(6) :: epsilon_tilde
-  real(pREAL), dimension(3,3), intent(in) :: epsilon
-
-
-  epsilon_tilde = [          epsilon(1,1),           epsilon(2,2),           epsilon(3,3), &
-                   2.0_pREAL*epsilon(3,2), 2.0_pREAL*epsilon(3,1), 2.0_pREAL*epsilon(1,2)]
-
-end function math_33toVoigt6_strain
-
-
-
-!--------------------------------------------------------------------------------------------------
-!> @brief Convert 6x6 Voigt stiffness matrix into symmetric 3x3x3x3 tensor.
-!--------------------------------------------------------------------------------------------------
-pure function math_Voigt66to3333_stiffness(C_tilde) result(C)
-
-  real(pREAL), dimension(3,3,3,3) :: C
-  real(pREAL), dimension(6,6), intent(in) :: C_tilde
-
-  integer :: i,j
-
-
-  do i=1,6; do j=1,6
-    C(MAPVOIGT(1,i),MAPVOIGT(2,i),MAPVOIGT(1,j),MAPVOIGT(2,j)) = C_tilde(i,j)
-    C(MAPVOIGT(2,i),MAPVOIGT(1,i),MAPVOIGT(1,j),MAPVOIGT(2,j)) = C_tilde(i,j)
-    C(MAPVOIGT(1,i),MAPVOIGT(2,i),MAPVOIGT(2,j),MAPVOIGT(1,j)) = C_tilde(i,j)
-    C(MAPVOIGT(2,i),MAPVOIGT(1,i),MAPVOIGT(2,j),MAPVOIGT(1,j)) = C_tilde(i,j)
-  end do; end do
-
-end function math_Voigt66to3333_stiffness
-
-
-!--------------------------------------------------------------------------------------------------
-!> @brief Convert 3x3x3x3 stiffness tensor into 6x6 Voigt matrix.
-!--------------------------------------------------------------------------------------------------
-pure function math_3333toVoigt66_stiffness(C) result(C_tilde)
-
-  real(pREAL), dimension(6,6) :: C_tilde
-  real(pREAL), dimension(3,3,3,3), intent(in) :: C
-
-  integer :: i,j
-
-
-#ifndef __INTEL_COMPILER
-  do concurrent(i=1:6, j=1:6)
-    C_tilde(i,j) = C(MAPVOIGT(1,i),MAPVOIGT(2,i),MAPVOIGT(1,j),MAPVOIGT(2,j))
-  end do
-#else
-  forall(i=1:6, j=1:6) C_tilde(i,j) = C(MAPVOIGT(1,i),MAPVOIGT(2,i),MAPVOIGT(1,j),MAPVOIGT(2,j))
-#endif
-
-end function math_3333toVoigt66_stiffness
 
 
 !--------------------------------------------------------------------------------------------------
@@ -1311,6 +1217,24 @@ end function math_clip
 
 
 !--------------------------------------------------------------------------------------------------
+!> @brief Calculate element of a normalized geometric sequence.
+!--------------------------------------------------------------------------------------------------
+real(pREAL) pure elemental function math_geometricFraction(r,i,N)
+
+  real(pREAL), intent(in) :: r                                                                      !< scaling factor
+  integer,     intent(in) :: i, N                                                                   !< increment, number of steps
+
+
+  if (dEq(r,1.0_pREAL,1.0e-9_pREAL)) then
+    math_geometricFraction = 1.0_pREAL / real(N,pREAL)
+  else
+    math_geometricFraction = (1.0_pREAL - r) * r**i / (r - r**(N + 1))
+  end if
+
+end function math_geometricFraction
+
+
+!--------------------------------------------------------------------------------------------------
 !> @brief Check correctness of some math functions.
 !--------------------------------------------------------------------------------------------------
 subroutine math_selfTest()
@@ -1335,6 +1259,8 @@ subroutine math_selfTest()
   real(pREAL)                 :: r
   integer                     :: d
   logical                     :: e
+  logical, dimension(9)       :: v9_l
+  logical, dimension(9,9)     :: t99_l
 
 
   if (any(abs([1.0_pREAL,2.0_pREAL,2.0_pREAL,3.0_pREAL,3.0_pREAL,3.0_pREAL] - &
@@ -1366,11 +1292,19 @@ subroutine math_selfTest()
 
   call random_number(v9)
   if (any(dNeq(math_33to9(math_9to33(v9)),v9))) &
-    error stop 'math_33to9/math_9to33'
+    error stop 'math_33to9/math_9to33 (real)'
+
+  v9_l = v9 > 0.5_pREAL
+  if (any(math_33to9(math_9to33(v9_l)) .neqv. v9_l)) &
+    error stop 'math_33to9/math_9to33 (bool)'
 
   call random_number(t99)
   if (any(dNeq(math_3333to99(math_99to3333(t99)),t99))) &
-    error stop 'math_3333to99/math_99to3333'
+    error stop 'math_3333to99/math_99to3333 (real)'
+
+  t99_l = t99 > 0.5_pREAL
+  if (any(math_3333to99(math_99to3333(t99_l)) .neqv. t99_l)) &
+    error stop 'math_3333to99/math_99to3333 (bool)'
 
   call random_number(v6)
   if (any(dNeq(math_sym33to6(math_6toSym33(v6)),v6))) &
@@ -1380,11 +1314,8 @@ subroutine math_selfTest()
   if (any(dNeq(math_sym3333to66(math_66toSym3333(t66)),t66,1.0e-15_pREAL))) &
     error stop 'math_sym3333to66/math_66toSym3333'
 
-  if (any(dNeq(math_3333toVoigt66_stiffness(math_Voigt66to3333_stiffness(t66)),t66,1.0e-15_pREAL))) &
-    error stop 'math_3333toVoigt66/math_Voigt66to3333'
-
-  call random_number(v6)
-  if (any(dNeq0(math_6toSym33(v6) - math_symmetric33(math_6toSym33(v6))))) &
+  call random_number(t33)
+  if (any(dNeq0(math_symmetric33(t33) - transpose(math_symmetric33(t33))))) &
     error stop 'math_symmetric33'
 
   call random_number(v3_1)
@@ -1516,6 +1447,11 @@ subroutine math_selfTest()
   if (any(dNeq(math_I3(1:3,mod(d+1,3)+1),t33_2(1:3,1)))) error stop 'math_eigh33/min eigenvector'
   if (any(dNeq(math_I3(1:3,d           ),t33_2(1:3,2)))) error stop 'math_eigh33/mid eigenvector'
   if (any(dNeq(math_I3(1:3,mod(d,3)+1  ),t33_2(1:3,3)))) error stop 'math_eigh33/max eigenvector'
+
+  r = 0.5_pREAL + r
+  d = nint(r*10.0_pREAL) + 2
+  if (dNeq(sum(math_geometricFraction(r,math_range(d),d)),1.0_pREAL,1.0e-9_pREAL)) &
+    error stop 'math_geometricFraction'
 
 end subroutine math_selfTest
 

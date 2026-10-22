@@ -292,7 +292,7 @@ module subroutine mechanical_init(phases, num_mech)
   num%stepSizeLi             = num_mech_eigen%get_asReal   ('r_linesearch_Li',    defaultVal=0.5_pREAL)
   num%rtol_Li                = num_mech_eigen%get_asReal   ('eps_rel_Li',         defaultVal=num%rtol_Lp)
   num%atol_Li                = num_mech_eigen%get_asReal   ('eps_abs_Li',         defaultVal=num%atol_Lp)
-  num%iJacoLiresiduum        = num_mech_eigen%get_asInt    ('f_update_jacobi_Li', defaultVal=num%iJacoLpresiduum)
+  num%iJacoLiresiduum        = num_mech_eigen%get_asInt    ('f_update_jacobi_Li', defaultVal=1)
 
   extmsg = ''
   if (num%stepMinCryst   <= 0.0_pREAL)     extmsg = trim(extmsg)//' r_cutback_min'
@@ -427,9 +427,7 @@ function integrateStress(F,Fp0,Fi0,Delta_t,ph,en) result(status)
                                       NiterationStressLi, &                                         ! number of inner stress integrations
                                       ierr, &                                                       ! error indicator for LAPACK
                                       o, &
-                                      p, &
-                                      jacoCounterLp, &
-                                      jacoCounterLi                                                 ! counters to check for Jacobian update
+                                      p
   logical :: error
 
 
@@ -446,7 +444,6 @@ function integrateStress(F,Fp0,Fi0,Delta_t,ph,en) result(status)
 
   A = matmul(F,invFp_current)                                                                       ! intermediate tensor needed later to calculate dFe_dLp
 
-  jacoCounterLi = 0
   steplengthLi  = 1.0_pREAL
   Liguess_old   = Liguess
   residuumLi_old_norm = huge(1.0_pREAL)
@@ -459,7 +456,6 @@ function integrateStress(F,Fp0,Fi0,Delta_t,ph,en) result(status)
     invFi_new = matmul(invFi_current,math_I3 - Delta_t*Liguess)
     Fi_new    = math_inv33(invFi_new)
 
-    jacoCounterLp = 0
     steplengthLp  = 1.0_pREAL
     Lpguess_old   = Lpguess
     residuumLp_old_norm = huge(1.0_pREAL)
@@ -500,8 +496,7 @@ function integrateStress(F,Fp0,Fi0,Delta_t,ph,en) result(status)
         cycle LpLoop
       end if
 
-      calculateJacobiLp: if (mod(jacoCounterLp, num%iJacoLpresiduum) == 0) then
-        jacoCounterLp = jacoCounterLp + 1
+      calculateJacobiLp: if (mod(NiterationStressLp-1, num%iJacoLpresiduum) == 0) then
 
         do o=1,3; do p=1,3
           dFe_dLp(o,1:3,p,1:3) = - Delta_t * A(o,p)*transpose(invFi_new)                            ! dFe_dLp(i,j,k,l) = -Delta_t * A(i,k) invFi(l,j)
@@ -543,8 +538,7 @@ function integrateStress(F,Fp0,Fi0,Delta_t,ph,en) result(status)
       cycle LiLoop
     end if
 
-    calculateJacobiLi: if (mod(jacoCounterLi, num%iJacoLiresiduum) == 0) then
-      jacoCounterLi = jacoCounterLi + 1
+    calculateJacobiLi: if (mod(NiterationStressLi-1, num%iJacoLiresiduum) == 0) then
 
       temp_33 = matmul(matmul(A,B),invFi_current)
       do o=1,3; do p=1,3
@@ -651,6 +645,10 @@ function integrateStateFPI(F_0,F,Fp0,Fi0,state0,Delta_t,ph,en) result(status)
   !> @brief calculate the damping for correction of state and dot state
   !--------------------------------------------------------------------------------------------------
   real(pREAL) pure function damper(omega_0,omega_1,omega_2)
+#ifndef __GFORTRAN__
+    use prec
+    import, none
+#endif
 
     real(pREAL), dimension(:), intent(in) :: &
       omega_0, omega_1, omega_2
@@ -955,6 +953,11 @@ subroutine results(group,ph)
 !> @brief Convert orientation array to quaternion array.
 !--------------------------------------------------------------------------------------------------
   function to_quaternion(dataset)
+#ifndef __GFORTRAN__
+    use prec
+    use rotations
+    import, none
+#endif
 
     type(tRotation), dimension(:), intent(in) :: dataset
     real(pREAL), dimension(4,size(dataset,1)) :: to_quaternion
@@ -1084,11 +1087,9 @@ end function phase_mechanical_constitutive
 !--------------------------------------------------------------------------------------------------
 !> @brief Restore data after homog cutback.
 !--------------------------------------------------------------------------------------------------
-module subroutine mechanical_restore(ce,includeL)
+module subroutine mechanical_restore(ce)
 
   integer, intent(in) :: ce
-  logical, intent(in) :: &
-    includeL                                                                                        !< protect agains fake cutback
 
   integer :: &
     co, ph, en
@@ -1097,14 +1098,10 @@ module subroutine mechanical_restore(ce,includeL)
   do co = 1,homogenization_Nconstituents(material_ID_homogenization(ce))
     ph = material_ID_phase(co,ce)
     en = material_entry_phase(co,ce)
-    if (includeL) then
-      phase_mechanical_Lp(ph)%data(1:3,1:3,en) = phase_mechanical_Lp0(ph)%data(1:3,1:3,en)
-      phase_mechanical_Li(ph)%data(1:3,1:3,en) = phase_mechanical_Li0(ph)%data(1:3,1:3,en)
-    end if                                                                                           ! maybe protecting everything from overwriting makes more sense
 
-    phase_mechanical_Fp(ph)%data(1:3,1:3,en)   = phase_mechanical_Fp0(ph)%data(1:3,1:3,en)
-    phase_mechanical_Fi(ph)%data(1:3,1:3,en)   = phase_mechanical_Fi0(ph)%data(1:3,1:3,en)
-    phase_mechanical_S(ph)%data(1:3,1:3,en)    = phase_mechanical_S0(ph)%data(1:3,1:3,en)
+    phase_mechanical_Fp(ph)%data(1:3,1:3,en) = phase_mechanical_Fp0(ph)%data(1:3,1:3,en)
+    phase_mechanical_Fi(ph)%data(1:3,1:3,en) = phase_mechanical_Fi0(ph)%data(1:3,1:3,en)
+    phase_mechanical_S(ph)%data(1:3,1:3,en)  = phase_mechanical_S0(ph)%data(1:3,1:3,en)
 
     plasticState(ph)%state(:,en) = plasticState(ph)%State0(:,en)
   end do
@@ -1249,7 +1246,6 @@ module subroutine mechanical_restartWrite(groupHandle,ph)
 
 
   call HDF5_write(plasticState(ph)%state,groupHandle,'omega_plastic')
-  call HDF5_write(phase_mechanical_S(ph)%data,groupHandle,'S')
   call HDF5_write(phase_mechanical_F(ph)%data,groupHandle,'F')
   call HDF5_write(phase_mechanical_Fp(ph)%data,groupHandle,'F_p')
   call HDF5_write(phase_mechanical_Fi(ph)%data,groupHandle,'F_i')
@@ -1269,7 +1265,6 @@ module subroutine mechanical_restartRead(groupHandle,ph)
 
 
   call HDF5_read(plasticState(ph)%state0,groupHandle,'omega_plastic')
-  call HDF5_read(phase_mechanical_S0(ph)%data,groupHandle,'S')
   call HDF5_read(phase_mechanical_F0(ph)%data,groupHandle,'F')
   call HDF5_read(phase_mechanical_Fp0(ph)%data,groupHandle,'F_p')
   call HDF5_read(phase_mechanical_Fi0(ph)%data,groupHandle,'F_i')

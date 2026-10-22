@@ -7,22 +7,15 @@ References
 D. Otto de Mentock et al., Journal of Open Source Software, 10(105):7164, 2025
 https://doi.org/10.21105/joss.07164
 """
-
-from pathlib import Path as _Path
-import re as _re
+# isort: skip_file
 import logging as _logging
-import multiprocessing as _mp
-
-# https://docs.python.org/3/library/multiprocessing.html#multiprocessing-start-methods
-# needed for Python < 3.14
-if (_start_methods := _mp.get_all_start_methods())[0] == 'fork' and 'forkserver' in _start_methods:
-    _mp.set_start_method('forkserver',True)
+from pathlib import Path as _Path
 
 _logging.basicConfig(level=_logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
 name = 'damask'
 with open(_Path(__file__).parent/'VERSION') as _f:
-    version = _re.sub(r'^v','',_f.readline().strip())
+    version = _f.readline().strip()
     __version__ = version
 
 from .                 import _typehints       # noqa
@@ -31,7 +24,7 @@ from .                 import seeds            # noqa
 from .                 import tensor           # noqa
 from .                 import mechanics        # noqa
 from .                 import solver           # noqa
-from .                 import grid_filters     # noqa
+from .                 import grid             # noqa
 # Modules that contain only one class (of the same name), are prefixed by a '_'.
 # For example, '_colormap' contains a class called 'Colormap' which is imported as 'damask.Colormap'.
 from ._rotation        import Rotation         # noqa
@@ -46,3 +39,12 @@ from ._loadcasegrid    import LoadcaseGrid     # noqa
 from ._loadcasemesh    import LoadcaseMesh     # noqa
 from ._geomgrid        import GeomGrid         # noqa
 from ._result          import Result           # noqa
+try:
+    import gmsh
+    gmsh.initialize()
+    gmsh.option.set_number('General.Terminal', 0)
+except ModuleNotFoundError:
+    gmsh = None
+    GeomMesh = None
+if gmsh is not None:
+    from ._geommesh    import GeomMesh         # type: ignore[assignment] # noqa

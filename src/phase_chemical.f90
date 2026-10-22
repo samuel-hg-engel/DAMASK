@@ -6,16 +6,18 @@ submodule(phase) chemical
 
   type :: tChemicalParameters
     real(pREAL) ::                 V_m = 0.0_pREAL                                                  !< molar volume
+    character(len=pSTRLEN), allocatable, dimension(:) :: &
+      output
   end type tChemicalParameters
 
   integer(kind(UNDEFINED)),  dimension(:), allocatable :: &
     chemical_energy
 
-  type :: tDataContainer             ! ?? not very telling name. Better: "fieldQuantities" ??
-    real(pREAL), dimension(:,:), allocatable :: C, dot_C, C0
-  end type tDataContainer
+  type :: tFieldQuantities
+    real(pREAL), dimension(:,:), allocatable :: C, C_dot, C0
+  end type tFieldQuantities
 
-  type(tDataContainer), dimension(:), allocatable  :: current         ! ?? not very telling name. Better: "field" ?? MD: current(ho)%T(en) reads quite good
+  type(tFieldQuantities), dimension(:), allocatable  :: current         ! ?? not very telling name. Better: "field" ?? MD: current(ho)%T(en) reads quite good
 
   type(tChemicalParameters), dimension(:), allocatable :: param
 
@@ -23,36 +25,64 @@ submodule(phase) chemical
   interface
 
 
-    module function quadEnergy_init() result(myChemicalEnergy)
+    module function calphaddisordered_init() result(myChemicalEnergy)
       logical, dimension(:), allocatable :: mychemicalEnergy
-    end function quadEnergy_init
+    end function calphaddisordered_init
 
-    module function quadEnergy_composition(mu_chemical,ph,en) result(comp)
+    module function calphaddisordered_mu_explicit(ph,en,comp_prev) result(mu_explicit)
+      integer, intent(in) :: &
+        ph, &
+        en
+      real(pREAL), dimension(:), intent(in) :: comp_prev
+      real(pREAL), dimension(:),allocatable :: mu_explicit
+    end function calphaddisordered_mu_explicit
+
+    module function calphaddisordered_composition(mu_chemical,comp_prev,ph,en) result(comp)
+      real(pREAL), dimension(:), intent(in) :: mu_chemical, comp_prev
+      integer, intent(in) :: &
+        ph, &
+        en
+      real(pREAL), dimension(:),allocatable :: comp
+    end function calphaddisordered_composition
+
+    module function calphaddisordered_compositionTangent(mu_chemical,comp_prev,ph,en) result(comp_tangent)
+      real(pREAL), dimension(:), intent(in) :: mu_chemical
+      real(pREAL), dimension(:), intent(in) :: comp_prev
+      integer, intent(in) :: &
+        ph, &
+        en
+      real(pREAL), dimension(:,:),allocatable :: comp_tangent
+    end function calphaddisordered_compositionTangent
+
+    module function calphaddisordered_mobility(ph,en) result(mobility)
+      integer, intent(in) :: ph, en
+      real(pREAL), dimension(:,:),allocatable :: mobility
+    end function calphaddisordered_mobility
+
+    module function quadenergy_init() result(myChemicalEnergy)
+      logical, dimension(:), allocatable :: mychemicalEnergy
+    end function quadenergy_init
+
+    module function quadenergy_composition(mu_chemical,ph,en) result(comp)
       real(pREAL), dimension(:), intent(in) :: mu_chemical
       integer, intent(in) :: &
         ph, &
         en
       real(pREAL), dimension(:),allocatable :: comp
-    end function quadEnergy_composition
+    end function quadenergy_composition
 
-    module function quadEnergy_compositionTangent(mu_chemical,ph,en) result(comp_tangent)
+    module function quadenergy_compositionTangent(mu_chemical,ph,en) result(comp_tangent)
       real(pREAL), dimension(:), intent(in) :: mu_chemical
       integer, intent(in) :: &
         ph, &
         en
       real(pREAL), dimension(:,:),allocatable :: comp_tangent
-    end function quadEnergy_compositionTangent
+    end function quadenergy_compositionTangent
 
-    module function quadEnergy_mobility(ph,en) result(mobility)
+    module function quadenergy_mobility(ph,en) result(mobility)
       integer, intent(in) :: ph, en
       real(pREAL), dimension(:,:),allocatable :: mobility
-    end function quadEnergy_mobility
-
-    module subroutine quadEnergy_results(ph,comp,group)
-      integer,          intent(in) :: ph
-      real(pREAL), dimension(:,:),intent(in) :: comp
-      character(len=*), intent(in) :: group
-    end subroutine quadEnergy_results
+    end function quadenergy_mobility
 
 
  end interface
@@ -69,40 +99,65 @@ module subroutine chemical_init(phases)
 
   type(tDict), pointer :: &
     phase, &
-    chemical, &
-    components, &
-    component
-
+    chemical
   integer :: &
-    ph, &
+    ph,    &
     Nmembers
-
+  logical :: chemical_active
 
   print'(/,a)', ' <<<+-  phase:chemical init  -+>>>'
 
   allocate(current(size(phases)))
+!  allocate(chemicalState(size(phases)))
   allocate(chemical_energy(size(phases)),source=UNDEFINED)
   allocate(param(size(phases)))
 
   phases => config_material%get_dict('phase')
+
+  chemical_active = .false.
+
   do ph = 1, size(phases)
+
     phase => phases%get_dict(ph)
-    chemical => phase%get_dict('chemical',defaultVal=emptyDict)
-    param(ph)%V_m = chemical%get_asReal('V_m',defaultVal=1.0_pREAL)
+
+    if (chemical_active) then
+      chemical => phase%get_dict('chemical')
+    else
+      chemical => phase%get_dict('chemical',defaultVal=emptyDict)
+    end if
+
+    if (size(chemical) > 0) then
+      chemical_active = .true.
+      print'(/,1x,a,i0,a)', 'phase ',ph,': '//phases%key(ph)
+
+      if (.not. chemical%contains('type')) &
+        call IO_error(143_pI16,'type','not specified for phase',ph,emph=[1,3])
+
+      param(ph)%V_m = chemical%get_asReal('V_m',defaultVal=1.0_pREAL)
+#if defined (__GFORTRAN__)
+      param(ph)%output = output_as1dStr(chemical)
+#else
+      param(ph)%output = chemical%get_as1dStr('output',defaultVal=emptyStrArray)
+#endif
+    end if
+
   end do
 
   !initialize chemical energy model
-  where(quadEnergy_init())       chemical_energy = CHEMICAL_QUADENERGY
+  where(quadenergy_init())      chemical_energy = CHEMICAL_QUADENERGY
+  where(calphaddisordered_init()) chemical_energy = CHEMICAL_CALPHADDISORDERED
 
-  do ph = 1,size(phases)
+  do ph = 1, size(phases)
+
     Nmembers = count(material_ID_phase == ph)
+
     if (chemical_energy(ph) == UNDEFINED) then
       allocate(current(ph)%C(1,Nmembers),source=0.0_pREAL)
-      allocate(current(ph)%dot_C(1,Nmembers),source=0.0_pREAL)
+      allocate(current(ph)%C_dot(1,Nmembers),source=0.0_pREAL)
       allocate(current(ph)%C0(1,Nmembers),source=0.0_pREAL)
     end if
-  end do
 
+  end do
 
 end subroutine chemical_init
 
@@ -127,8 +182,10 @@ module function phase_calculate_composition(mu,co,ce) result(conc)
   mu_chemical = mu
   chemicalEnergyType: select case (chemical_energy(ph))
 
+    case (CHEMICAL_CALPHADDISORDERED)
+      conc =  calphaddisordered_composition(mu_chemical,current(ph)%C0(:,en),ph,en)
     case (CHEMICAL_QUADENERGY)
-      conc = quadEnergy_composition(mu_chemical,ph,en)
+      conc = quadenergy_composition(mu_chemical,ph,en)
 
   end select chemicalEnergyType
 
@@ -136,7 +193,28 @@ end function phase_calculate_composition
 
 
 !----------------------------------------------------------------------------------------------
-!< @brief Retrieves composition for constituent.
+!< @brief set chemical field
+!----------------------------------------------------------------------------------------------
+module subroutine phase_chemical_setField(comp, Delta_t, co, ce)
+
+  real(pREAL), dimension(:), intent(in) :: comp
+  real(pREAL), intent(in) :: Delta_t
+  integer, intent(in) :: co, ce
+
+  integer :: &
+    ph, en
+
+  ph = material_ID_phase(co,ce)
+  en = material_entry_phase(co,ce)
+
+  current(ph)%C(:,en) = comp
+  current(ph)%C_dot(:,en) = (current(ph)%C(:,en) - current(ph)%C0(:,en))/merge(1.0_pREAL,Delta_t,dEq0(Delta_t))
+
+end subroutine phase_chemical_setField
+
+
+!----------------------------------------------------------------------------------------------
+!< @brief return mobility.
 !----------------------------------------------------------------------------------------------
 module function phase_get_mobility(co,ce) result(mobility)
 
@@ -152,8 +230,10 @@ module function phase_get_mobility(co,ce) result(mobility)
 
   chemicalEnergyType: select case (chemical_energy(ph))
 
+    case (CHEMICAL_CALPHADDISORDERED)
+      mobility = calphaddisordered_mobility(ph,en)
     case (CHEMICAL_QUADENERGY)
-      mobility = quadEnergy_mobility(ph,en)
+      mobility = quadenergy_mobility(ph,en)
 
   end select chemicalEnergyType
 
@@ -161,7 +241,7 @@ end function phase_get_mobility
 
 
 !----------------------------------------------------------------------------------------------
-!< @brief Retrieves composition tangent for constituent.
+!< @brief return derivative of composition with respect to diffusion potential.
 !----------------------------------------------------------------------------------------------
 module function phase_compositionTangent(mu,co,ce) result(comp_tangent)
 
@@ -180,8 +260,10 @@ module function phase_compositionTangent(mu,co,ce) result(comp_tangent)
   mu_chemical = mu
   chemicalEnergyType: select case (chemical_energy(ph))
 
+    case (CHEMICAL_CALPHADDISORDERED)
+      comp_tangent =  calphaddisordered_compositionTangent(mu_chemical,current(ph)%C0(:,en),ph,en)
     case (CHEMICAL_QUADENERGY)
-      comp_tangent = quadEnergy_compositionTangent(mu_chemical,ph,en)
+      comp_tangent = quadenergy_compositionTangent(mu_chemical,ph,en)
 
   end select chemicalEnergyType
 
@@ -203,6 +285,34 @@ end subroutine chemical_forward
 
 
 !----------------------------------------------------------------------------------------------
+!< @brief writes restart data for chemical to file.
+!----------------------------------------------------------------------------------------------
+module subroutine chemical_restartWrite(groupHandle,ph)
+
+  integer(HID_T), intent(in) :: groupHandle
+  integer, intent(in) :: ph
+
+
+  call HDF5_write(current(ph)%C,groupHandle,'x')
+
+end subroutine chemical_restartWrite
+
+
+!----------------------------------------------------------------------------------------------
+!< @brief reads restart data for chemical to file.
+!----------------------------------------------------------------------------------------------
+module subroutine chemical_restartRead(groupHandle,ph)
+
+  integer(HID_T), intent(in) :: groupHandle
+  integer, intent(in) :: ph
+
+
+  call HDF5_read(current(ph)%C0,groupHandle,'x')
+
+end subroutine chemical_restartRead
+
+
+!----------------------------------------------------------------------------------------------
 !< @brief writes chemical results to HDF5 output file
 !----------------------------------------------------------------------------------------------
 module subroutine chemical_result(group,ph)
@@ -210,16 +320,18 @@ module subroutine chemical_result(group,ph)
   character(len=*), intent(in) :: group
   integer,          intent(in) :: ph
 
+  integer :: ou
 
-  if (chemical_energy(ph) /= UNDEFINED) &
+  if (chemical_energy(ph) /= UNDEFINED) then
+
     call result_closeGroup(result_addGroup(group//'chemical'))
-
-  chemicalEnergyType: select case (chemical_energy(ph))
-
-    case (CHEMICAL_QUADENERGY)
-      call quadEnergy_results(ph,current(ph)%C,group//'chemical/')
-
-  end select chemicalEnergyType
+    outputsLoop: do ou = 1,size(param(ph)%output)
+      select case(trim(param(ph)%output(ou)))
+        case ('x')
+          call result_writeDataset(current(ph)%C,group//'chemical/','x','mole fraction','1',material_name_species)
+      end select
+    end do outputsLoop
+  end if
 
 end subroutine chemical_result
 

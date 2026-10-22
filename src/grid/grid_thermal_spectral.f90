@@ -3,6 +3,7 @@
 !> @author Martin Diehl, Max-Planck-Institut für Eisenforschung GmbH
 !> @author Pratheek Shanthraj, Max-Planck-Institut für Eisenforschung GmbH
 !> @author Shaokang Zhang, Max-Planck-Institut für Eisenforschung GmbH
+!> @author Fotios Tsiolis, Max-Planck-Institut für Eisenforschung GmbH
 !> @brief Spectral solver for thermal conduction
 !--------------------------------------------------------------------------------------------------
 #include <petsc/finclude/petscsnes.h>
@@ -10,9 +11,10 @@
 module grid_thermal_spectral
   use PETScDMDA
   use PETScSNES
-#ifndef PETSC_HAVE_MPI_F90MODULE_VISIBILITY
+#ifndef PETSC_EXPOSES_MPI
   use MPI_f08
 #endif
+  use HDF5
 
   use prec
   use parallelization
@@ -20,15 +22,15 @@ module grid_thermal_spectral
   use misc
   use CLI
   use HDF5_utilities
-  use HDF5
   use spectral_utilities
+  use grid_utilities
   use discretization_grid
   use homogenization
   use types
   use config
   use constants
 
-#ifndef PETSC_HAVE_MPI_F90MODULE_VISIBILITY
+#ifndef PETSC_EXPOSES_MPIF90
   implicit none(type,external)
 #else
   implicit none
@@ -58,6 +60,11 @@ module grid_thermal_spectral
   integer                     :: totalIter = 0                                                      !< total iteration in current increment
   real(pREAL), dimension(3,3) :: K_ref
   real(pREAL)                 :: mu_ref, Delta_t_
+  real(pREAL) :: &
+    T_aim         = 0.0_pREAL, &                                                                    !< prescribed mean temperature
+    T_aim_lastinc = 0.0_pREAL, &                                                                    !< mean temperature at start of increment
+    T_aimDot      = 0.0_pREAL                                                                       !< rate of mean temperature
+  type(tBCthermal) :: T_BC_current                                                                  !< thermal BC for current load step; unallocated = undefined
   integer(kind(STATUS_OK))    :: status
 
   public :: &
@@ -83,6 +90,7 @@ subroutine grid_thermal_spectral_init(num_grid_thermal)
   PetscErrorCode :: err_PETSc
   integer(HID_T) :: fileHandle, groupHandle
   real(pREAL), dimension(1,product(cells(1:2))*cells3) :: tempN
+  real(pREAL), dimension(1) :: tmp
   character(len=:), allocatable :: &
     extmsg, &
     petsc_options
@@ -148,7 +156,7 @@ subroutine grid_thermal_spectral_init(num_grid_thermal)
   call DMDAVecGetArray(DM_thermal,T_vec,T,err_PETSc)                                                ! returns 0-indexed T
   CHKERRQ(err_PETSc)
 
-  restartRead: if (CLI_restartInc > 0) then
+  restartRead: if (CLI_restartInc /= -1) then
     print'(/,1x,a,1x,i0)', 'loading restart data of increment', CLI_restartInc
 
     fileHandle  = HDF5_openFile(CLI_jobName//'_restart.hdf5','r')
@@ -156,16 +164,27 @@ subroutine grid_thermal_spectral_init(num_grid_thermal)
 
     call HDF5_read(tempN,groupHandle,'T',.false.)
     T = reshape(tempN,[cells(1),cells(2),cells3])
-    call HDF5_read(tempN,groupHandle,'T_lastinc',.false.)                                           ! ToDo 4.0: rename dataset name
+    call HDF5_read(tempN,groupHandle,'T_lastinc',.false.)
     T_lastinc = reshape(tempN,[cells(1),cells(2),cells3])
     T_staginc = T_lastinc
-    call HDF5_read(tempN,groupHandle,'dotT_lastinc',.false.)
-    T_dot_lastinc = reshape(tempN,[cells(1),cells(2),cells3])                                       ! ToDo 4.0: rename dataset name
+    call HDF5_read(tempN,groupHandle,'T_dot_lastinc',.false.)
+    T_dot_lastinc = reshape(tempN,[cells(1),cells(2),cells3])
+    call HDF5_read(tmp,groupHandle,'T_aim',.false.)
+    T_aim = tmp(1)
+    call HDF5_read(tmp,groupHandle,'T_aim_lastinc',.false.)
+    T_aim_lastinc = tmp(1)
+
+    call HDF5_closeGroup(groupHandle)
+    call HDF5_closeFile(fileHandle)
   else
     T = discretization_grid_getScalarInitialCondition('T')
     T_lastinc = T(0:,0:,lbound(T,3):)
     T_staginc = T_lastinc
     T_dot_lastinc = 0.0_pREAL * T_lastinc
+    T_aim = sum(T_lastinc)*wgt
+    call MPI_Allreduce(MPI_IN_PLACE,T_aim,1_MPI_INTEGER_KIND,MPI_DOUBLE,MPI_SUM,MPI_COMM_WORLD,err_MPI)
+    call parallelization_chkerr(err_MPI)
+    T_aim_lastinc = T_aim
   end if restartRead
 
   call homogenization_thermal_setField(reshape(T,[product(cells(1:2))*cells3]), &
@@ -189,6 +208,7 @@ function grid_thermal_spectral_solution(Delta_t) result(solution)
   type(tSolutionState) :: solution
   PetscInt  :: devNull
   PetscReal :: T_min, T_max, stagNorm
+  real(pREAL) :: T_mean
   DM :: DM_thermal
   real(pREAL), dimension(:,:,:), pointer :: T                                                       ! 0-indexed
   integer(MPI_INTEGER_KIND) :: err_MPI
@@ -203,6 +223,26 @@ function grid_thermal_spectral_solution(Delta_t) result(solution)
   call SNESSolve(SNES_thermal,PETSC_NULL_VEC,T_vec,err_PETSc)
   CHKERRQ(err_PETSc)
   call SNESGetConvergedReason(SNES_thermal,reason,err_PETSc)
+  CHKERRQ(err_PETSc)
+
+  call SNESGetDM(SNES_thermal,DM_thermal,err_PETSc)
+  CHKERRQ(err_PETSc)
+  call DMDAVecGetArray(DM_thermal,T_vec,T,err_PETSc)
+  CHKERRQ(err_PETSc)
+  T_mean = sum(T)*wgt
+  call MPI_Allreduce(MPI_IN_PLACE,T_mean,1_MPI_INTEGER_KIND,MPI_DOUBLE,MPI_SUM,MPI_COMM_WORLD,err_MPI)
+  call parallelization_chkerr(err_MPI)
+  if (allocated(T_BC_current%myType)) then
+    select case (T_BC_current%thermostat)
+      case ('shift')
+        T = T + (T_aim - T_mean)
+      case ('scale')
+        T = T*(T_aim/T_mean)
+    end select
+  else
+    T_aim = T_mean
+  end if
+  call DMDAVecRestoreArray(DM_thermal,T_vec,T,err_PETSc)
   CHKERRQ(err_PETSc)
 
 #if PETSC_VERSION_MINOR<23
@@ -248,19 +288,21 @@ end function grid_thermal_spectral_solution
 !--------------------------------------------------------------------------------------------------
 !> @brief Set DAMASK data to current solver status.
 !--------------------------------------------------------------------------------------------------
-subroutine grid_thermal_spectral_forward(cutBack, Delta_t)
+subroutine grid_thermal_spectral_forward(cutBack, guess, Delta_t, Delta_t_prev, t_remaining, &
+                                         thermal_BC)
 
-  logical,     intent(in) :: cutBack
-  real(pREAL), intent(in) :: Delta_t
+  logical,          intent(in)           :: cutBack, guess
+  real(pREAL),      intent(in)           :: Delta_t, Delta_t_prev, t_remaining
+  type(tBCthermal), intent(in), optional :: thermal_BC
 
   DM :: DM_thermal
-  real(pREAL),  dimension(:,:,:), pointer :: T                                                      ! 0-indexed
+  real(pREAL),  dimension(:,:,:), pointer :: T
   PetscErrorCode :: err_PETSc
 
 
   call SNESGetDM(SNES_thermal,DM_thermal,err_PETSc)
   CHKERRQ(err_PETSc)
-  call DMDAVecGetArray(DM_thermal,T_vec,T,err_PETSc)                                                ! returns 0-indexed T
+  call DMDAVecGetArray(DM_thermal,T_vec,T,err_PETSc)
   CHKERRQ(err_PETSc)
 
   if (cutBack) then
@@ -268,9 +310,26 @@ subroutine grid_thermal_spectral_forward(cutBack, Delta_t)
                                          reshape(T_dot_lastinc,[product(cells(1:2))*cells3]))
     T = T_lastinc
     T_staginc = T_lastinc
+    T_aim = T_aim_lastinc
   else
     T_dot_lastinc = (T - T_lastinc)/Delta_t
     T_lastinc = T
+    T_aim_lastinc = T_aim
+    if (present(thermal_BC)) then
+      T_BC_current = thermal_BC
+      select case (thermal_BC%myType)
+        case ('T_dot')
+          T_aimDot = thermal_BC%value
+        case ('T')
+          T_aimDot = (thermal_BC%value - T_aim_lastinc)/t_remaining
+      end select
+    else
+      if (allocated(T_BC_current%myType))     deallocate(T_BC_current%myType)
+      if (allocated(T_BC_current%thermostat)) deallocate(T_BC_current%thermostat)
+      T_aimDot = merge(0.0_pREAL,(T_aim - T_aim_lastinc)/Delta_t_prev,guess)
+    end if
+    T_aim = T_aim_lastinc + T_aimDot*Delta_t
+    T = utilities_forwardScalarField(Delta_t, T_lastinc, T_dot_lastinc)
     call updateReference()
   end if
 
@@ -301,8 +360,10 @@ subroutine grid_thermal_spectral_restartWrite()
   fileHandle  = HDF5_openFile(CLI_jobName//'_restart.hdf5','a')
   groupHandle = HDF5_openGroup(fileHandle,'solver')
   call HDF5_write(reshape(T,[1,product(shape(T))]),groupHandle,'T')
-  call HDF5_write(reshape(T_lastinc,[1,product(shape(T_lastinc))]),groupHandle,'T_lastinc')         ! ToDo 4.0: rename dataset name
-  call HDF5_write(reshape(T_dot_lastinc,[1,product(shape(T_dot_lastinc))]),groupHandle,'dotT_lastinc') ! ToDo 4.0: rename dataset name
+  call HDF5_write(reshape(T_lastinc,[1,product(shape(T_lastinc))]),groupHandle,'T_lastinc')
+  call HDF5_write(reshape(T_dot_lastinc,[1,product(shape(T_dot_lastinc))]),groupHandle,'T_dot_lastinc')
+  call HDF5_write([T_aim],        groupHandle,'T_aim')
+  call HDF5_write([T_aim_lastinc],groupHandle,'T_aim_lastinc')
   call HDF5_closeGroup(groupHandle)
   call HDF5_closeFile(fileHandle)
 
@@ -317,11 +378,7 @@ end subroutine grid_thermal_spectral_restartWrite
 !--------------------------------------------------------------------------------------------------
 subroutine form_residual(residual_subdomain,T,r,dummy,err_PETSc)
 
-#if PETSC_VERSION_MINOR<22
-  DMDALocalInfo, dimension(DMDA_LOCAL_INFO_SIZE) :: &
-#else
   DMDALocalInfo :: &
-#endif
     residual_subdomain
   real(pREAL), dimension(cells(1),cells(2),cells3), intent(in) :: &
     T                                                                                               !< temperature

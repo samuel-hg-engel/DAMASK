@@ -59,7 +59,7 @@ def test_phenopowerlaw_equivalence(res_path,tmp_path,copy_files,mat_configs,np_r
 
     cell = 11
     grid = damask.GeomGrid(np.arange(cell**3).reshape([cell]*3),np.ones(3)*1e-5)
-    rot = damask.Rotation.from_random(cell**3,rng_seed=np_rng)
+    rot = damask.Rotation.from_random(cell**3,rng=np_rng)
 
     stress = []
     for model,mat_config in mat_configs.items():
@@ -70,7 +70,7 @@ def test_phenopowerlaw_equivalence(res_path,tmp_path,copy_files,mat_configs,np_r
         mat_config.save(tmp_path/model/'material.yaml')
         copy_files(res_path,tmp_path/model)
 
-        damask.util.run(f'DAMASK_grid -l {load}.yaml -g {cell**3}.vti -m material.yaml '\
+        damask.util.run(f'damask_grid -l {load}.yaml -g {cell**3}.vti -m material.yaml '\
                         f'--wd {tmp_path/model} --job {cell**3}_{load}')
 
         r = damask.Result(tmp_path/model/f'{cell**3}_{load}.hdf5')
@@ -109,7 +109,7 @@ def test_analytic_reference(res_path,tmp_path,copy_files,mat_configs,np_rng):
 
     copy_files(res_path,tmp_path)
 
-    damask.util.run(f'DAMASK_grid -l tensionX.yaml -g homogeneous.vti -m material.yaml --wd {tmp_path} '\
+    damask.util.run(f'damask_grid -l tensionX.yaml -g homogeneous.vti -m material.yaml --wd {tmp_path} '\
                         '--job homogeneous_tensionX')
 
     r = damask.Result(tmp_path/'homogeneous_tensionX.hdf5')
@@ -119,7 +119,7 @@ def test_analytic_reference(res_path,tmp_path,copy_files,mat_configs,np_rng):
     sim['xi'] = np.array([np.average(o) for o in r.get('xi').values()])
 
     load = damask.YAML.load(tmp_path/'tensionX.yaml')
-    dot_F = load['loadstep'][0]['boundary_conditions']['mechanical']['dot_F'][0][0]
+    F_dot = load['loadstep'][0]['boundary_condition']['mechanical']['F_dot'][0][0]
     t = load['loadstep'][0]['discretization']['t']
     N = load['loadstep'][0]['discretization']['N']
     Delta_t = t/N
@@ -130,13 +130,13 @@ def test_analytic_reference(res_path,tmp_path,copy_files,mat_configs,np_rng):
     S = [0]
 
     dot_xi = 0
-    dot_F_p = 0
+    F_dot_p = 0
 
     for inc in range(N):
 
-        F.append(F[-1] + dot_F*Delta_t)
+        F.append(F[-1] + F_dot*Delta_t)
 
-        F_p_guess = F_p[-1] + dot_F_p*Delta_t
+        F_p_guess = F_p[-1] + F_dot_p*Delta_t
         xi_guess = xi[-1] + dot_xi*Delta_t
 
         for i in range(5):                                                                          # attempt of FPI
@@ -147,11 +147,11 @@ def test_analytic_reference(res_path,tmp_path,copy_files,mat_configs,np_rng):
 
             dot_gamma = dot_gamma_0 * (1.5**.5 * norm_Mp_dev/(M*xi_guess))**n
             L_p_guess = dot_gamma/1.5**.5
-            dot_F_p = L_p_guess*F_p[-1]
+            F_dot_p = L_p_guess*F_p[-1]
             dot_xi = dot_gamma * h_0 * np.abs(1-(xi_guess/xi_inf))**a * np.sign(1.-xi_guess/xi_inf) *h
 
             xi_guess = xi[-1] + dot_xi*Delta_t
-            F_p_guess = F_p[-1] + dot_F_p*Delta_t
+            F_p_guess = F_p[-1] + F_dot_p*Delta_t
 
         S.append(S_guess)
         F_p.append(F_p_guess)
