@@ -10,21 +10,20 @@
 submodule(phase:plastic) dislobasic
 
   type :: tParameters
-    real(pREAL) :: &
-      G_0                                                                                           !< isotropic shear modulus at 0K
     real(pREAL),               allocatable, dimension(:) :: &
       b_sl, &                                                                                       !< magnitude of Burgers vector (m)
-      k_1, &
+      k_1, &                                                                                        !< dislocation multiplication factor      
       k_2, &                                                                                        !< dislocation annhilation factor
-      delta_Q, &                                                                                    !< dislocation annhilation energy
+      delta_Q, &                                                                                    !< dislocation annhilation energy (J)
       alpha_n, &                                                                                    !< slip-system interaction strength
-      tau_0, &                                                                                      !< intrinsic strength
+      tau_0, &                                                                                      !< intrinsic strength (Pa)
       A, &                                                                                          !< dislocation activation energy factor
       B, &                                                                                          !< dislocation activation volume factor
-      rho_mob_0, &
-      nu, &
-      delta_F, &
-      delta_V
+      rho_mob_0, &                                                                                  !< mobile dislocation density (constant) (/m^2)
+      nu, &                                                                                         !< dislocation attempt frequency
+      delta_F, &                                                                                    !< dislocation activation energy (J)
+      delta_V, &                                                                                    !< dislocation activation volume (/m^3)
+      xi_p                                                                                          !< precipiate strengthening (Pa)
     real(pREAL),               allocatable, dimension(:,:) :: &
       forestProjection
     real(pREAL),               allocatable, dimension(:,:,:) :: &
@@ -32,7 +31,7 @@ submodule(phase:plastic) dislobasic
     integer :: &
       sum_N_sl                                                                                      !< total number of active slip systems
     logical :: &
-      isothermal_flow  = .true.   
+      isothermal_flow  = .true.                                                                     !< flag to use predefined A and B or calculate from delta_F, delta_V, rho_mob_0, nu
     character(len=:),          allocatable :: &
       isotropic_bound
     character(len=pSTRLEN),    allocatable, dimension(:) :: &
@@ -55,7 +54,7 @@ submodule(phase:plastic) dislobasic
 
   type :: tDislobasicDependentState
     real(pREAL),                  dimension(:,:),   allocatable :: &
-      tau_pass                                                                                      !< threshold stress for slip
+      tau_pass                                                                                      !< threshold stress for slip (Pa)
   end type tDislobasicDependentState
 
 !--------------------------------------------------------------------------------------------------
@@ -84,7 +83,7 @@ module function plastic_dislobasic_init() result(myPlasticity)
     N_sl
   real(pREAL), allocatable, dimension(:) :: &
     f_edge, &
-    rho_ssd_0                                                                                       !< initial SSD dislocation density per slip system
+    rho_ssd_0                                                                                       !< initial SSD dislocation density per slip system (/m^2)
   character(len=:), allocatable :: &
     refs, &
     extmsg
@@ -159,7 +158,8 @@ module function plastic_dislobasic_init() result(myPlasticity)
       prm%b_sl      = math_expand(pl%get_as1dReal('b_sl',      requiredSize=size(N_sl)),N_sl)
       prm%k_1       = math_expand(pl%get_as1dReal('k_1',       requiredSize=size(N_sl)),N_sl)
       prm%k_2       = math_expand(pl%get_as1dReal('k_2',       requiredSize=size(N_sl)),N_sl)
-      prm%delta_Q   = math_expand(pl%get_as1dReal('delta_Q',   requiredSize=size(N_sl)),N_sl)
+      prm%delta_Q   = math_expand(pl%get_as1dReal('delta_Q',   requiredSize=size(N_sl), &
+                                                 defaultVal=[(0.0_pREAL,i=1,size(N_sl))]),N_sl)
       prm%tau_0     = math_expand(pl%get_as1dReal('tau_0',     requiredSize=size(N_sl)),N_sl)
       prm%alpha_n   = math_expand(pl%get_as1dReal('alpha_n',   requiredSize=size(N_sl)),N_sl)
       prm%A         = math_expand(pl%get_as1dReal('A',         requiredSize=size(N_sl)),N_sl)
@@ -168,8 +168,10 @@ module function plastic_dislobasic_init() result(myPlasticity)
       prm%nu        = math_expand(pl%get_as1dReal('nu',        requiredSize=size(N_sl)),N_sl)
       prm%delta_F   = math_expand(pl%get_as1dReal('delta_F',   requiredSize=size(N_sl)),N_sl)
       prm%delta_V   = math_expand(pl%get_as1dReal('delta_V',   requiredSize=size(N_sl)),N_sl)
+      prm%xi_p      = math_expand(pl%get_as1dReal('xi_p',      requiredSize=size(N_sl), &
+                                                 defaultVal=[(0.0_pREAL,i=1,size(N_sl))]),N_sl)
+
       prm%isothermal_flow    =    pl%get_asBool('isothermal_flow',  defaultVal=prm%isothermal_flow)
-      prm%G_0       = pl%get_asReal('G_0')
 
       prm%forestProjection = spread(          f_edge,1,prm%sum_N_sl) &
                            * crystal_forestProjection_edge (N_sl,phase_lattice(ph),phase_cOverA(ph)) &
@@ -177,19 +179,19 @@ module function plastic_dislobasic_init() result(myPlasticity)
                            * crystal_forestProjection_screw(N_sl,phase_lattice(ph),phase_cOverA(ph))
 
       ! sanity checks
-      if (any(rho_ssd_0         <  0.0_pREAL))         extmsg = trim(extmsg)//' rho_ssd_0'
-      if (any(prm%b_sl          <= 0.0_pREAL))         extmsg = trim(extmsg)//' b_sl'
-      if (any(prm%alpha_n       <= 0.0_pREAL))         extmsg = trim(extmsg)//' alpha_n'
+      if (any(rho_ssd_0         <   0.0_pREAL))        extmsg = trim(extmsg)//' rho_ssd_0'
+      if (any(prm%b_sl          <=  0.0_pREAL))        extmsg = trim(extmsg)//' b_sl'
+      if (any(prm%alpha_n       <=  0.0_pREAL))        extmsg = trim(extmsg)//' alpha_n'
       if (any(prm%k_1           <=  0.0_pREAL))        extmsg = trim(extmsg)//' k_1'
       if (any(prm%k_2           <=  0.0_pREAL))        extmsg = trim(extmsg)//' k_2'
-      if (any(prm%delta_Q       <=  0.0_pREAL))        extmsg = trim(extmsg)//' delta_Q'
+      if (any(prm%delta_Q       <   0.0_pREAL))        extmsg = trim(extmsg)//' delta_Q'
       if (any(prm%A             <=  0.0_pREAL))        extmsg = trim(extmsg)//' A'
       if (any(prm%B             <=  0.0_pREAL))        extmsg = trim(extmsg)//' B'
       if (any(prm%rho_mob_0     <=  0.0_pREAL))        extmsg = trim(extmsg)//' rho_mob_0'
       if (any(prm%nu            <=  0.0_pREAL))        extmsg = trim(extmsg)//' nu'
-      if (any(prm%delta_F       <=  0.0_pREAL))        extmsg = trim(extmsg)//' delta_F'
-      if (any(prm%delta_V       <=  0.0_pREAL))        extmsg = trim(extmsg)//' delta_V'
-      if (    prm%G_0           <= 0.0_pREAL)          extmsg = trim(extmsg)//' G_0'
+      if (any(prm%delta_F       <   0.0_pREAL))        extmsg = trim(extmsg)//' delta_F'
+      if (any(prm%delta_V       <   0.0_pREAL))        extmsg = trim(extmsg)//' delta_V'
+      if (any(prm%xi_p          <   0.0_pREAL))        extmsg = trim(extmsg)//' xi_p'
 
     else slipActive
       rho_ssd_0 = emptyRealArray
@@ -205,6 +207,7 @@ module function plastic_dislobasic_init() result(myPlasticity)
                prm%nu, &
                prm%delta_F, &
                prm%delta_V, &
+               prm%xi_p, &
                source=emptyRealArray)
       allocate(prm%forestProjection(0,0))
 
@@ -298,7 +301,6 @@ module function dislobasic_dotState(Mp,ph,en) result(dotState)
 
   real(pREAL), dimension(param(ph)%sum_N_sl) :: &
     dot_gamma_sl, &
-    k_1_T, &
     k_2_T
   real(pREAL) :: &
     mu, nu, &
@@ -315,10 +317,9 @@ module function dislobasic_dotState(Mp,ph,en) result(dotState)
     call kinetics_sl(Mp,T,ph,en,dot_gamma_sl)
     abs_dot_gamma_sl = abs(dot_gamma_sl)
 
-    k_1_T = prm%k_1 ! ((mu / prm%G_0)**2.0_pREAL) / (prm%alpha_n**2 * 100.0_pReal)
     k_2_T = prm%k_2 * exp(-1.0_pREAL * prm%delta_Q/K_B/T)
 
-    dot_rho_ssd = abs_dot_gamma_sl * (k_1_T / prm%b_sl * prm%alpha_n * sqrt(matmul(prm%forestProjection,stt%rho_ssd(:,en)))) &
+    dot_rho_ssd = abs_dot_gamma_sl * (prm%k_1 / prm%b_sl * prm%alpha_n * sqrt(matmul(prm%forestProjection,stt%rho_ssd(:,en)))) &
                 - abs_dot_gamma_sl * (k_2_T * stt%rho_ssd(:,en))
 
 
@@ -338,13 +339,12 @@ module subroutine dislobasic_dependentState(ph,en)
   real(pREAL) :: &
     mu
 
-
   associate(prm => param(ph), stt => state(ph), dst => dependentState(ph))
 
     mu = elastic_mu(ph,en,prm%isotropic_bound)
 
     !* threshold stress for dislocation motion
-    dst%tau_pass(:,en) = prm%tau_0 + mu * prm%b_sl * prm%alpha_n * sqrt(matmul(prm%forestProjection,stt%rho_ssd(:,en)))
+    dst%tau_pass(:,en) = prm%tau_0 + mu * prm%b_sl * sqrt(prm%alpha_n**2.0_pREAL * matmul(prm%forestProjection,stt%rho_ssd(:,en)) + prm%xi_p**2.0_pREAL)
 
   end associate
 
