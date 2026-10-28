@@ -22,8 +22,7 @@ submodule(phase:plastic) dislobasic
       delta_F, &                                                                                    !< dislocation activation energy (J)
       delta_V, &                                                                                    !< dislocation activation volume (/m^3)
       xi_p                                                                                          !< precipiate strengthening (Pa)
-    real(pREAL),                :: &
-      T_ref                                                                                         !< reference temperature (K)
+    real(pREAL) :: T_ref                                                                            !< reference temperature (K)
     real(pREAL),               allocatable, dimension(:,:) :: &
       forestProjection
     real(pREAL),               allocatable, dimension(:,:,:) :: &
