@@ -1,10 +1,6 @@
 !--------------------------------------------------------------------------------------------------
-!> @author Martin Diehl, Max-Planck-Institut für Eisenforschung GmbH
-!> @author Su Leen Wong, Max-Planck-Institut für Eisenforschung GmbH
-!> @author Nan Jia, Max-Planck-Institut für Eisenforschung GmbH
-!> @author Franz Roters, Max-Planck-Institut für Eisenforschung GmbH
-!> @author Philip Eisenlohr, Max-Planck-Institut für Eisenforschung GmbH
-!> @brief material subroutine incoprorating dislocation and twinning physics
+!> @author Samuel Engel, UK Atomic Energy Authority
+!> @brief material subroutine incoprorating dislocation and precipiation hardening
 !> @details to be done
 !--------------------------------------------------------------------------------------------------
 submodule(phase:plastic) dislobasic
@@ -17,6 +13,8 @@ submodule(phase:plastic) dislobasic
       delta_Q, &                                                                                    !< dislocation annhilation energy (J)
       alpha_n, &                                                                                    !< slip-system interaction strength
       tau_0, &                                                                                      !< intrinsic strength (Pa)
+      tau_0_T, &                                                                                    !< intrinsic strength per T (Pa/K)
+      tau_0_T2, &                                                                                   !< intrinsic strength per T^2 (Pa/K^2)
       A, &                                                                                          !< dislocation activation energy factor
       B, &                                                                                          !< dislocation activation volume factor
       rho_mob_0, &                                                                                  !< mobile dislocation density (constant) (/m^2)
@@ -24,6 +22,8 @@ submodule(phase:plastic) dislobasic
       delta_F, &                                                                                    !< dislocation activation energy (J)
       delta_V, &                                                                                    !< dislocation activation volume (/m^3)
       xi_p                                                                                          !< precipiate strengthening (Pa)
+    real(pREAL),                :: &
+      T_ref                                                                                         !< reference temperature (K)
     real(pREAL),               allocatable, dimension(:,:) :: &
       forestProjection
     real(pREAL),               allocatable, dimension(:,:,:) :: &
@@ -161,6 +161,11 @@ module function plastic_dislobasic_init() result(myPlasticity)
       prm%delta_Q   = math_expand(pl%get_as1dReal('delta_Q',   requiredSize=size(N_sl), &
                                                  defaultVal=[(0.0_pREAL,i=1,size(N_sl))]),N_sl)
       prm%tau_0     = math_expand(pl%get_as1dReal('tau_0',     requiredSize=size(N_sl)),N_sl)
+      prm%tau_0_T   = math_expand(pl%get_as1dReal('tau_0,T',   requiredSize=size(N_sl), &
+                                                 defaultVal=[(0.0_pREAL,i=1,size(N_sl))]),N_sl)
+      prm%tau_0_T2  = math_expand(pl%get_as1dReal('tau_0,T^2', requiredSize=size(N_sl), &
+                                                 defaultVal=[(0.0_pREAL,i=1,size(N_sl))]),N_sl)
+      prm%T_ref     = pl%get_asReal('T_ref', defaultVal=293.15_pREAL)
       prm%alpha_n   = math_expand(pl%get_as1dReal('alpha_n',   requiredSize=size(N_sl)),N_sl)
       prm%A         = math_expand(pl%get_as1dReal('A',         requiredSize=size(N_sl)),N_sl)
       prm%B         = math_expand(pl%get_as1dReal('B',         requiredSize=size(N_sl)),N_sl)
@@ -181,6 +186,7 @@ module function plastic_dislobasic_init() result(myPlasticity)
       ! sanity checks
       if (any(rho_ssd_0         <   0.0_pREAL))        extmsg = trim(extmsg)//' rho_ssd_0'
       if (any(prm%b_sl          <=  0.0_pREAL))        extmsg = trim(extmsg)//' b_sl'
+      if (any(prm%tau_0         <   0.0_pREAL))        extmsg = trim(extmsg)//' tau_0'
       if (any(prm%alpha_n       <=  0.0_pREAL))        extmsg = trim(extmsg)//' alpha_n'
       if (any(prm%k_1           <=  0.0_pREAL))        extmsg = trim(extmsg)//' k_1'
       if (any(prm%k_2           <=  0.0_pREAL))        extmsg = trim(extmsg)//' k_2'
@@ -197,6 +203,8 @@ module function plastic_dislobasic_init() result(myPlasticity)
       rho_ssd_0 = emptyRealArray
       allocate(prm%b_sl, &
                prm%tau_0, &
+               prm%tau_0_T, &
+               prm%tau_0_T2, &
                prm%k_1, &
                prm%k_2, &
                prm%delta_Q, &
@@ -337,14 +345,24 @@ module subroutine dislobasic_dependentState(ph,en)
     ph, &
     en
   real(pREAL) :: &
-    mu
+    mu, T
+  real(pREAL), dimension(param(ph)%sum_N_sl) :: &
+    tau_0_eff
 
   associate(prm => param(ph), stt => state(ph), dst => dependentState(ph))
 
+    T = thermal_T(ph,en)
+
     mu = elastic_mu(ph,en,prm%isotropic_bound)
 
+    ! guard for 0 stress
+    tau_0_eff = max(0.0_pREAL, &
+                    prm%tau_0 &
+                  + prm%tau_0_T * (T - prm%T_ref) &
+                  + prm%tau_0_T2 * (T - prm%T_ref)**2.0_pREAL)
+  
     !* threshold stress for dislocation motion
-    dst%tau_pass(:,en) = prm%tau_0 + mu * prm%b_sl * sqrt(prm%alpha_n**2.0_pREAL * matmul(prm%forestProjection,stt%rho_ssd(:,en)) + prm%xi_p**2.0_pREAL)
+    dst%tau_pass(:,en) = tau_0_eff + mu * prm%b_sl * sqrt(prm%alpha_n**2.0_pREAL * matmul(prm%forestProjection,stt%rho_ssd(:,en)) + prm%xi_p**2.0_pREAL)
 
   end associate
 
