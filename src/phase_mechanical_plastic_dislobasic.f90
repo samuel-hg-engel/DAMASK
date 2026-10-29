@@ -33,7 +33,7 @@ submodule(phase:plastic) dislobasic
     integer :: &
       sum_N_sl                                                                                      !< total number of active slip systems
     logical :: &
-      isothermal_flow  = .true.                                                                     !< flag to use predefined A and B or calculate from delta_F, delta_V, rho_mob_0, nu
+      isothermal_flow  = .true. &                                                                   !< flag to use predefined A and B or calculate from delta_F, delta_V, rho_mob_0, nu
       isotropic_mu = .true.                                                                         !< flag to use isotropic mu
     character(len=:),          allocatable :: &
       isotropic_bound
