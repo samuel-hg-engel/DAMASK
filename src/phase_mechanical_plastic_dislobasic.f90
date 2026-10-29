@@ -22,7 +22,10 @@ submodule(phase:plastic) dislobasic
       delta_F, &                                                                                    !< dislocation activation energy (J)
       delta_V, &                                                                                    !< dislocation activation volume (/m^3)
       xi_p                                                                                          !< precipiate strengthening (Pa)
-    real(pREAL) :: T_ref                                                                            !< reference temperature (K)
+    real(pREAL) :: &
+      T_ref, &                                                                                      !< reference temperature (K)
+      G, &                                                                                          !< isotropic shear modulus (Pa)
+      G_T                                                                                           !< isotropic thermal rate (/K)
     real(pREAL),               allocatable, dimension(:,:) :: &
       forestProjection
     real(pREAL),               allocatable, dimension(:,:,:) :: &
@@ -31,6 +34,7 @@ submodule(phase:plastic) dislobasic
       sum_N_sl                                                                                      !< total number of active slip systems
     logical :: &
       isothermal_flow  = .true.                                                                     !< flag to use predefined A and B or calculate from delta_F, delta_V, rho_mob_0, nu
+      isotropic_mu = .true.                                                                         !< flag to use isotropic mu
     character(len=:),          allocatable :: &
       isotropic_bound
     character(len=pSTRLEN),    allocatable, dimension(:) :: &
@@ -174,8 +178,10 @@ module function plastic_dislobasic_init() result(myPlasticity)
       prm%delta_V   = math_expand(pl%get_as1dReal('delta_V',   requiredSize=size(N_sl)),N_sl)
       prm%xi_p      = math_expand(pl%get_as1dReal('xi_p',      requiredSize=size(N_sl), &
                                                  defaultVal=[(0.0_pREAL,i=1,size(N_sl))]),N_sl)
-
+      prm%G         = pl%get_asReal('G',defaultVal=1.0_pREAL)
+      prm%G_T       = pl%get_asReal('G,T',defaultVal=0.0_pREAL)
       prm%isothermal_flow    =    pl%get_asBool('isothermal_flow',  defaultVal=prm%isothermal_flow)
+      prm%isotropic_mu       =    pl%get_asBool('isotropic_mu',     defaultVal=prm%isotropic_mu)
 
       prm%forestProjection = spread(          f_edge,1,prm%sum_N_sl) &
                            * crystal_forestProjection_edge (N_sl,phase_lattice(ph),phase_cOverA(ph)) &
@@ -310,15 +316,12 @@ module function dislobasic_dotState(Mp,ph,en) result(dotState)
     dot_gamma_sl, &
     k_2_T
   real(pREAL) :: &
-    mu, nu, &
     T
 
   associate(prm => param(ph), stt => state(ph), dst => dependentState(ph), &
             dot_rho_ssd => dotState(indexDotState(ph)%rho_ssd(1):indexDotState(ph)%rho_ssd(2)), &
             abs_dot_gamma_sl => dotState(indexDotState(ph)%gamma_sl(1):indexDotState(ph)%gamma_sl(2)))
 
-    mu = elastic_mu(ph,en,prm%isotropic_bound)
-    nu = elastic_nu(ph,en,prm%isotropic_bound)
     T = thermal_T(ph,en)
 
     call kinetics_sl(Mp,T,ph,en,dot_gamma_sl)
@@ -352,7 +355,12 @@ module subroutine dislobasic_dependentState(ph,en)
 
     T = thermal_T(ph,en)
 
-    mu = elastic_mu(ph,en,prm%isotropic_bound)
+    ! isotropic mu with temperature
+    if (prm%isotropic_mu) then
+      mu = prm%G * exp(-prm%G_T * (T - prm%T_ref))
+    else
+      mu = elastic_mu(ph,en,prm%isotropic_bound)
+    end if
 
     ! guard for 0 stress
     tau_0_eff = max(0.0_pREAL, &
