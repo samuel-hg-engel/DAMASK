@@ -21,7 +21,8 @@ submodule(phase:plastic) dislobasic
       nu, &                                                                                         !< dislocation attempt frequency
       delta_F, &                                                                                    !< dislocation activation energy (J)
       delta_V, &                                                                                    !< dislocation activation volume (/m^3)
-      xi_p                                                                                          !< precipiate strengthening (Pa)
+      xi_p, &                                                                                       !< precipiate strengthening scale (/m)
+      xi_geom                                                                                       !< geometry strengthening scale (/m)
     real(pREAL) :: &
       T_ref, &                                                                                      !< reference temperature (K)
       G, &                                                                                          !< isotropic shear modulus (Pa)
@@ -178,6 +179,8 @@ module function plastic_dislobasic_init() result(myPlasticity)
       prm%delta_V   = math_expand(pl%get_as1dReal('delta_V',   requiredSize=size(N_sl)),N_sl)
       prm%xi_p      = math_expand(pl%get_as1dReal('xi_p',      requiredSize=size(N_sl), &
                                                  defaultVal=[(0.0_pREAL,i=1,size(N_sl))]),N_sl)
+      prm%xi_geom   = math_expand(pl%get_as1dReal('xi_geom',      requiredSize=size(N_sl), &
+                                                 defaultVal=[(0.0_pREAL,i=1,size(N_sl))]),N_sl)
       prm%G         = pl%get_asReal('G',defaultVal=1.0_pREAL)
       prm%G_T       = pl%get_asReal('G,T',defaultVal=0.0_pREAL)
       prm%isothermal_flow    =    pl%get_asBool('isothermal_flow',  defaultVal=prm%isothermal_flow)
@@ -203,6 +206,7 @@ module function plastic_dislobasic_init() result(myPlasticity)
       if (any(prm%delta_F       <   0.0_pREAL))        extmsg = trim(extmsg)//' delta_F'
       if (any(prm%delta_V       <   0.0_pREAL))        extmsg = trim(extmsg)//' delta_V'
       if (any(prm%xi_p          <   0.0_pREAL))        extmsg = trim(extmsg)//' xi_p'
+      if (any(prm%xi_geom       <   0.0_pREAL))        extmsg = trim(extmsg)//' xi_geom'
 
     else slipActive
       rho_ssd_0 = emptyRealArray
@@ -221,6 +225,7 @@ module function plastic_dislobasic_init() result(myPlasticity)
                prm%delta_F, &
                prm%delta_V, &
                prm%xi_p, &
+               prm%xi_geom, &
                source=emptyRealArray)
       allocate(prm%forestProjection(0,0))
 
@@ -330,7 +335,7 @@ module function dislobasic_dotState(Mp,ph,en) result(dotState)
     k_2_T = prm%k_2 * exp(-1.0_pREAL * prm%delta_Q/K_B/T)
 
     dot_rho_ssd = abs_dot_gamma_sl * (prm%k_1 / prm%b_sl * sqrt(prm%alpha_n**2.0_pREAL * matmul(prm%forestProjection,stt%rho_ssd(:,en)) &
-                                                                + prm%xi_p**2.0_pREAL)) &
+                                                                + prm%xi_geom**2.0_pREAL)) &
                 - abs_dot_gamma_sl * (k_2_T * stt%rho_ssd(:,en))
 
 
